@@ -5,8 +5,10 @@ from pathlib import Path
 from typing import Dict, Generator, List, NamedTuple, Set
 
 from pipx.animate import animate
-from pipx.constants import DEFAULT_PYTHON, PIPX_SHARED_PTH
+from pipx.constants import PIPX_SHARED_PTH
+from pipx.interpreter import DEFAULT_PYTHON
 from pipx.package_specifier import (
+    fix_package_name,
     parse_specifier_for_install,
     parse_specifier_for_metadata,
 )
@@ -14,12 +16,13 @@ from pipx.pipx_metadata_file import PackageInfo, PipxMetadata
 from pipx.shared_libs import shared_libs
 from pipx.util import (
     PipxError,
+    exec_app,
     full_package_description,
     get_site_packages,
     get_venv_paths,
     rmdir,
-    run,
     run_subprocess,
+    run_verify,
 )
 
 venv_metadata_inspector_raw = pkgutil.get_data("pipx", "venv_metadata_inspector.py")
@@ -31,8 +34,7 @@ VENV_METADATA_INSPECTOR = venv_metadata_inspector_raw.decode("utf-8")
 
 
 class VenvContainer:
-    """A collection of venvs managed by pipx.
-    """
+    """A collection of venvs managed by pipx."""
 
     def __init__(self, root: Path):
         self._root = root
@@ -44,16 +46,14 @@ class VenvContainer:
         return str(self._root)
 
     def iter_venv_dirs(self) -> Generator[Path, None, None]:
-        """Iterate venv directories in this container.
-        """
+        """Iterate venv directories in this container."""
         for entry in self._root.iterdir():
             if not entry.is_dir():
                 continue
             yield entry
 
     def get_venv_dir(self, package: str) -> Path:
-        """Return the expected venv path for given `package`.
-        """
+        """Return the expected venv path for given `package`."""
         return self._root.joinpath(package)
 
     def verify_shared_libs(self):
@@ -120,10 +120,19 @@ class Venv:
             ] = self.pipx_metadata.main_package
         return return_dict
 
+    @property
+    def main_package_name(self) -> str:
+        if self.pipx_metadata.main_package.package is None:
+            # This is OK, because if no metadata, we are pipx < v0.15.0.0 and
+            #   venv_name==main_package_name
+            return self.root.name
+        else:
+            return self.pipx_metadata.main_package.package
+
     def create_venv(self, venv_args: List[str], pip_args: List[str]) -> None:
         with animate("creating virtual environment", self.do_animation):
             cmd = [self.python, "-m", "venv", "--without-pip"]
-            run(cmd + venv_args + [str(self.root)])
+            run_verify(cmd + venv_args + [str(self.root)])
         shared_libs.create(pip_args, self.verbose)
         pipx_pth = get_site_packages(self.python_path) / PIPX_SHARED_PTH
         # write path pointing to the shared libs site-packages directory
@@ -168,9 +177,13 @@ class Venv:
         include_dependencies: bool,
         include_apps: bool,
         is_main_package: bool,
+        suffix: str = "",
     ) -> None:
         if pip_args is None:
             pip_args = []
+
+        # package name in package specifier can mismatch URL due to user error
+        package_or_url = fix_package_name(package_or_url, package)
 
         # check syntax and clean up spec and pip_args
         (package_or_url, pip_args) = parse_specifier_for_install(
@@ -198,6 +211,7 @@ class Venv:
             include_dependencies=include_dependencies,
             include_apps=include_apps,
             is_main_package=is_main_package,
+            suffix=suffix,
         )
 
         # Verify package installed ok
@@ -284,6 +298,7 @@ class Venv:
         include_dependencies: bool,
         include_apps: bool,
         is_main_package: bool,
+        suffix: str = "",
     ) -> None:
         venv_package_metadata = self.get_venv_metadata_for_package(package)
         package_info = PackageInfo(
@@ -297,6 +312,7 @@ class Venv:
             apps_of_dependencies=venv_package_metadata.apps_of_dependencies,
             app_paths_of_dependencies=venv_package_metadata.app_paths_of_dependencies,
             package_version=venv_package_metadata.package_version,
+            suffix=suffix,
         )
         if is_main_package:
             self.pipx_metadata.main_package = package_info
@@ -308,14 +324,6 @@ class Venv:
     def get_python_version(self) -> str:
         return run_subprocess([str(self.python_path), "--version"]).stdout.strip()
 
-    def pip_search(self, search_term: str, pip_search_args: List[str]) -> str:
-        cmd_run = run_subprocess(
-            [str(self.python_path), "-m", "pip", "search"]
-            + pip_search_args
-            + [search_term]
-        )
-        return cmd_run.stdout.strip()
-
     def list_installed_packages(self) -> Set[str]:
         cmd_run = run_subprocess(
             [str(self.python_path), "-m", "pip", "list", "--format=json"]
@@ -323,12 +331,8 @@ class Venv:
         pip_list = json.loads(cmd_run.stdout.strip())
         return set([x["name"] for x in pip_list])
 
-    def run_app(self, app: str, app_args: List[str]) -> int:
-        cmd = [str(self.bin_path / app)] + app_args
-        try:
-            return run(cmd, check=False)
-        except KeyboardInterrupt:
-            return 130  # shell code for Ctrl-C
+    def run_app(self, app: str, app_args: List[str]) -> None:
+        exec_app([str(self.bin_path / app)] + app_args)
 
     def _upgrade_package_no_metadata(self, package: str, pip_args: List[str]) -> None:
         with animate(
@@ -344,6 +348,7 @@ class Venv:
         include_dependencies: bool,
         include_apps: bool,
         is_main_package: bool,
+        suffix: str = "",
     ) -> None:
         with animate(
             f"upgrading {full_package_description(package, package_or_url)}",
@@ -358,10 +363,11 @@ class Venv:
             include_dependencies=include_dependencies,
             include_apps=include_apps,
             is_main_package=is_main_package,
+            suffix=suffix,
         )
 
-    def _run_pip(self, cmd: List[str]) -> int:
+    def _run_pip(self, cmd: List[str]) -> None:
         cmd = [str(self.python_path), "-m", "pip"] + cmd
         if not self.verbose:
             cmd.append("-q")
-        return run(cmd)
+        run_verify(cmd)

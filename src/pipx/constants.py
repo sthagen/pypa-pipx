@@ -3,7 +3,6 @@ import sys
 from pathlib import Path
 from textwrap import dedent
 
-DEFAULT_PYTHON = sys.executable
 DEFAULT_PIPX_HOME = Path.home() / ".local/pipx"
 DEFAULT_PIPX_BIN_DIR = Path.home() / ".local/bin"
 PIPX_HOME = Path(os.environ.get("PIPX_HOME", DEFAULT_PIPX_HOME)).resolve()
@@ -71,7 +70,8 @@ tcsh:
     eval `register-python-argcomplete --shell tcsh pipx`
 
 fish:
-    register-python-argcomplete --shell fish pipx | source
+    # Not required to be in the config file, only run once
+    register-python-argcomplete --shell fish pipx >~/.config/fish/completions/pipx.fish
 
 """
 )

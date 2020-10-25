@@ -17,6 +17,7 @@ import argcomplete  # type: ignore
 from . import commands, constants
 from .animate import hide_cursor, show_cursor
 from .colors import bold, green
+from .interpreter import DEFAULT_PYTHON
 from .util import PipxError, mkdir
 from .venv import VenvContainer
 from .version import __version__
@@ -48,6 +49,7 @@ will be installed to $PIPX_HOME/venvs.
 PIPX_BIN_DIR: Overrides location of app installations. Apps are symlinked
 or copied here.
 USE_EMOJI: Override emoji behavior. Default value varies based on platform.
+PIPX_DEFAULT_PYTHON: Overrides default python used for commands.
 """
 )
 
@@ -65,6 +67,7 @@ packages. 'sudo' is not required to do this.
 pipx install PACKAGE_NAME
 pipx install --python PYTHON PACKAGE_NAME
 pipx install VCS_URL
+pipx install ./LOCAL_PATH
 pipx install ZIP_FILE
 pipx install TAR_GZ_FILE
 
@@ -76,6 +79,10 @@ and can be overridden by setting the environment variable `PIPX_HOME`
 
 The default app location is {constants.DEFAULT_PIPX_BIN_DIR} and can be
 overridden by setting the environment variable `PIPX_BIN_DIR`.
+
+The default python executable used to install a package is
+{DEFAULT_PYTHON} and can be overridden by setting the environment
+variable `PIPX_DEFAULT_PYTHON`.
 """
 
 
@@ -107,8 +114,7 @@ def get_venv_args(parsed_args: Dict) -> List[str]:
     return venv_args
 
 
-def run_pipx_command(args: argparse.Namespace):  # noqa: C901
-    setup(args)
+def run_pipx_command(args: argparse.Namespace) -> int:  # noqa: C901
     verbose = args.verbose if "verbose" in args else False
     pip_args = get_pip_args(vars(args))
     venv_args = get_venv_args(vars(args))
@@ -135,7 +141,8 @@ def run_pipx_command(args: argparse.Namespace):  # noqa: C901
             else args.app_with_args[0]
         )
         use_cache = not args.no_cache
-        return commands.run(
+        # This never returns
+        commands.run(
             args.app_with_args[0],
             package_or_url,
             args.app_with_args[1:],
@@ -146,6 +153,8 @@ def run_pipx_command(args: argparse.Namespace):  # noqa: C901
             verbose,
             use_cache,
         )
+        # error, we should never reach it
+        return 1
     elif args.command == "install":
         return commands.install(
             None,
@@ -176,19 +185,30 @@ def run_pipx_command(args: argparse.Namespace):  # noqa: C901
                 include_dependencies=args.include_deps,
                 force=args.force,
             )
+        # TODO: Issue #503 make pipx commands have proper exit codes
+        return 0
     elif args.command == "upgrade":
         return commands.upgrade(
-            venv_dir, package, pip_args, verbose, upgrading_all=False, force=args.force
+            venv_dir, pip_args, verbose, upgrading_all=False, force=args.force
         )
     elif args.command == "list":
-        return commands.list_packages(venv_container, args.include_injected)
+        commands.list_packages(venv_container, args.include_injected)
+        # TODO: Issue #503 make pipx commands have proper exit codes
+        return 0
     elif args.command == "uninstall":
-        return commands.uninstall(venv_dir, package, constants.LOCAL_BIN_DIR, verbose)
+        return commands.uninstall(venv_dir, constants.LOCAL_BIN_DIR, verbose)
     elif args.command == "uninstall-all":
         return commands.uninstall_all(venv_container, constants.LOCAL_BIN_DIR, verbose)
     elif args.command == "upgrade-all":
         return commands.upgrade_all(
             venv_container, verbose, skip=args.skip, force=args.force
+        )
+    elif args.command == "reinstall":
+        return commands.reinstall(
+            venv_dir=venv_dir,
+            local_bin_dir=constants.LOCAL_BIN_DIR,
+            python=args.python,
+            verbose=verbose,
         )
     elif args.command == "reinstall-all":
         return commands.reinstall_all(
@@ -262,11 +282,16 @@ def _add_install(subparsers):
         help="Modify existing virtual environment and files in PIPX_BIN_DIR",
     )
     p.add_argument(
-        "--suffix", help="Optional suffix for virtual environment and executable names"
+        "--suffix",
+        default="",
+        help=(
+            "Optional suffix for virtual environment and executable names. "
+            "NOTE: The suffix feature is experimental and subject to change."
+        ),
     )
     p.add_argument(
         "--python",
-        default=constants.DEFAULT_PYTHON,
+        default=DEFAULT_PYTHON,
         help=(
             "The Python executable used to create the Virtual Environment and run the "
             "associated app/apps. Must be v3.5+."
@@ -326,8 +351,7 @@ def _add_upgrade(subparsers, autocomplete_list_of_installed_packages):
 def _add_upgrade_all(subparsers):
     p = subparsers.add_parser(
         "upgrade-all",
-        help="Upgrade all packages. "
-        "Runs `pip install -U <pkgname>` for each package.",
+        help="Upgrade all packages. Runs `pip install -U <pkgname>` for each package.",
         description="Upgrades all packages within their virtual environments by running 'pip install --upgrade PACKAGE'",
     )
 
@@ -360,6 +384,33 @@ def _add_uninstall_all(subparsers):
     p.add_argument("--verbose", action="store_true")
 
 
+def _add_reinstall(subparsers, autocomplete_list_of_installed_packages):
+    p = subparsers.add_parser(
+        "reinstall",
+        formatter_class=LineWrapRawTextHelpFormatter,
+        help="Reinstall a package",
+        description=textwrap.dedent(
+            """
+        Reinstalls a package.
+
+        Package is uninstalled, then installed with pipx install PACKAGE
+        with the same options used in the original install of PACKAGE.
+
+        """
+        ),
+    )
+    p.add_argument("package").completer = autocomplete_list_of_installed_packages
+    p.add_argument(
+        "--python",
+        default=DEFAULT_PYTHON,
+        help=(
+            "The Python executable used to recreate the Virtual Environment "
+            "and run the associated app/apps. Must be v3.5+."
+        ),
+    )
+    p.add_argument("--verbose", action="store_true")
+
+
 def _add_reinstall_all(subparsers):
     p = subparsers.add_parser(
         "reinstall-all",
@@ -379,7 +430,7 @@ def _add_reinstall_all(subparsers):
     )
     p.add_argument(
         "--python",
-        default=constants.DEFAULT_PYTHON,
+        default=DEFAULT_PYTHON,
         help=(
             "The Python executable used to recreate the Virtual Environment "
             "and run the associated app/apps. Must be v3.5+."
@@ -448,7 +499,7 @@ def _add_run(subparsers):
     p.add_argument("--verbose", action="store_true")
     p.add_argument(
         "--python",
-        default=constants.DEFAULT_PYTHON,
+        default=DEFAULT_PYTHON,
         help="The Python version to run package's CLI app with. Must be v3.5+.",
     )
     add_pip_venv_args(p)
@@ -483,6 +534,10 @@ def _add_ensurepath(subparsers):
     p = subparsers.add_parser(
         "ensurepath",
         help=(
+            "Ensure directories necessary for pipx operation are in your "
+            "PATH environment variable."
+        ),
+        description=(
             "Ensure directory where pipx stores apps is in your "
             "PATH environment variable. Also if pipx was installed via "
             "`pip install --user`, ensure pipx itself is in your PATH. "
@@ -522,6 +577,7 @@ def get_command_parser():
     _add_upgrade_all(subparsers)
     _add_uninstall(subparsers, autocomplete_list_of_installed_packages)
     _add_uninstall_all(subparsers)
+    _add_reinstall(subparsers, autocomplete_list_of_installed_packages)
     _add_reinstall_all(subparsers)
     _add_list(subparsers)
     _add_run(subparsers)
@@ -530,7 +586,9 @@ def get_command_parser():
 
     parser.add_argument("--version", action="store_true", help="Print version and exit")
     subparsers.add_parser(
-        "completions", help="Print instructions on enabling shell completions for pipx"
+        "completions",
+        help="Print instructions on enabling shell completions for pipx",
+        description="Print instructions on enabling shell completions for pipx",
     )
     return parser
 
@@ -549,6 +607,8 @@ def setup(args):
         logging.basicConfig(level=logging.WARNING, format="%(message)s")
 
     logging.info(f"pipx version is {__version__}")
+    logging.info(f"Default python interpreter is {repr(DEFAULT_PYTHON)}")
+
     mkdir(constants.PIPX_LOCAL_VENVS)
     mkdir(constants.LOCAL_BIN_DIR)
     mkdir(constants.PIPX_VENV_CACHEDIR)

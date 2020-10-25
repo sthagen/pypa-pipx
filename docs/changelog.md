@@ -1,7 +1,18 @@
 dev
 
-- [docs] Update license
+- Added reinstall command for reinstalling a single venv.
+- Changed `pipx run` on non-Windows systems to actually replace pipx process with the app process instead of running it as a subprocess.  (Now using python's `os.exec*`)
+- [bugfix] Fixed bug with reinstall-all command when package have been installed using a specifier. Now the initial specifier is used.
 
+0.15.6.0
+
+- [docs] Update license
+- [docs] Display a more idomatic command for registering completions on fish.
+- [bugfix] Fixed regression in list, inject, upgrade, reinstall-all commands when suffixed packages are used.
+- [bugfix] Do not reset package url during upgrade when main package is `pipx`
+- Updated help text to show description for `ensurepath` and `completions` help
+- Added support for user-defined default python interpreter via new PIPX_DEFAULT_PYTHON.  Helpful for use with pyenv among other uses.
+- [bugfix] Fixed bug where extras were ignored with a PEP 508 package specification with a URL.
 
 0.15.5.1
 
@@ -19,6 +30,7 @@ dev
 - [bugfix] Requiring userpath v1.4.1 or later so ensure Windows bug is fixed for `ensurepath` (#437)
 - [feature] log pipx version (#423)
 - [feature] `--suffix` option for `install` to allow multiple versions of same tool to be installed (#445)
+- [feature] pipx can now be used with the Windows embeddable Python distribution
 
 0.15.4.0
 
