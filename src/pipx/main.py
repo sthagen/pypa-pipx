@@ -5,8 +5,10 @@
 import argparse
 import functools
 import logging
+import os
 import re
 import shlex
+import shutil
 import sys
 import textwrap
 import urllib.parse
@@ -27,63 +29,84 @@ def print_version() -> None:
     print(__version__)
 
 
+def indented_wrap(text, subsequent_indent="", split="\n", **kwargs):
+    text = textwrap.dedent(text).strip()
+    minimum_width = 40
+    width = max(shutil.get_terminal_size((80, 40)).columns, minimum_width) - 2
+    return "\n".join(
+        [
+            textwrap.fill(line, width=width, subsequent_indent=subsequent_indent)
+            for line in text.splitlines()
+        ]
+    )
+
+
 SPEC_HELP = textwrap.dedent(
     """The package name or specific installation source passed to pip.
     Runs `pip install -U SPEC`.
     For example `--spec mypackage==2.0.0` or `--spec  git+https://github.com/user/repo.git@branch`
     """
 )
+
 PIPX_DESCRIPTION = textwrap.dedent(
     f"""
-Install and execute apps from Python packages.
+        Install and execute apps from Python packages.
 
-Binaries can either be installed globally into isolated Virtual Environments
-or run directly in an temporary Virtual Environment.
+        Binaries can either be installed globally into isolated Virtual Environments
+        or run directly in an temporary Virtual Environment.
 
-Virtual Environment location is {str(constants.PIPX_LOCAL_VENVS)}.
-Symlinks to apps are placed in {str(constants.LOCAL_BIN_DIR)}.
+        Virtual Environment location is {str(constants.PIPX_LOCAL_VENVS)}.
+        Symlinks to apps are placed in {str(constants.LOCAL_BIN_DIR)}.
 
-Optional Environment Variables:
-PIPX_HOME: Overrides default pipx location. Virtual Environments
-will be installed to $PIPX_HOME/venvs.
-PIPX_BIN_DIR: Overrides location of app installations. Apps are symlinked
-or copied here.
-USE_EMOJI: Override emoji behavior. Default value varies based on platform.
-PIPX_DEFAULT_PYTHON: Overrides default python used for commands.
-"""
+        """
+)
+PIPX_DESCRIPTION += "\n"
+PIPX_DESCRIPTION += indented_wrap(
+    """
+        optional environment variables:
+          PIPX_HOME             Overrides default pipx location. Virtual Environments will be installed to $PIPX_HOME/venvs.
+          PIPX_BIN_DIR          Overrides location of app installations. Apps are symlinked or copied here.
+          USE_EMOJI             Overrides emoji behavior. Default value varies based on platform.
+          PIPX_DEFAULT_PYTHON   Overrides default python used for commands.
+    """,
+    " " * 24,  # match the indent of argparse options
 )
 
-INSTALL_DESCRIPTION = f"""
-The install command is the preferred way to globally install apps
-from python packages on your system. It creates an isolated virtual
-environment for the package, then ensures the package's apps are
-accessible on your $PATH.
+DOC_DEFAULT_PYTHON = os.getenv("PIPX__DOC_DEFAULT_PYTHON", DEFAULT_PYTHON)
 
-The result: apps you can run from anywhere, located in packages
-you can cleanly upgrade or uninstall. Guaranteed to not have
-dependency version conflicts or interfere with your OS's python
-packages. 'sudo' is not required to do this.
+INSTALL_DESCRIPTION = textwrap.dedent(
+    f"""
+    The install command is the preferred way to globally install apps
+    from python packages on your system. It creates an isolated virtual
+    environment for the package, then ensures the package's apps are
+    accessible on your $PATH.
 
-pipx install PACKAGE_NAME
-pipx install --python PYTHON PACKAGE_NAME
-pipx install VCS_URL
-pipx install ./LOCAL_PATH
-pipx install ZIP_FILE
-pipx install TAR_GZ_FILE
+    The result: apps you can run from anywhere, located in packages
+    you can cleanly upgrade or uninstall. Guaranteed to not have
+    dependency version conflicts or interfere with your OS's python
+    packages. 'sudo' is not required to do this.
 
-The PACKAGE_SPEC argument is passed directly to `pip install`.
+    pipx install PACKAGE_NAME
+    pipx install --python PYTHON PACKAGE_NAME
+    pipx install VCS_URL
+    pipx install ./LOCAL_PATH
+    pipx install ZIP_FILE
+    pipx install TAR_GZ_FILE
 
-The default virtual environment location is {constants.DEFAULT_PIPX_HOME}
-and can be overridden by setting the environment variable `PIPX_HOME`
- (Virtual Environments will be installed to `$PIPX_HOME/venvs`).
+    The PACKAGE_SPEC argument is passed directly to `pip install`.
 
-The default app location is {constants.DEFAULT_PIPX_BIN_DIR} and can be
-overridden by setting the environment variable `PIPX_BIN_DIR`.
+    The default virtual environment location is {constants.DEFAULT_PIPX_HOME}
+    and can be overridden by setting the environment variable `PIPX_HOME`
+    (Virtual Environments will be installed to `$PIPX_HOME/venvs`).
 
-The default python executable used to install a package is
-{DEFAULT_PYTHON} and can be overridden by setting the environment
-variable `PIPX_DEFAULT_PYTHON`.
-"""
+    The default app location is {constants.DEFAULT_PIPX_BIN_DIR} and can be
+    overridden by setting the environment variable `PIPX_BIN_DIR`.
+
+    The default python executable used to install a package is
+    {DOC_DEFAULT_PYTHON} and can be overridden
+    by setting the environment variable `PIPX_DEFAULT_PYTHON`.
+    """
+)
 
 
 class LineWrapRawTextHelpFormatter(argparse.RawDescriptionHelpFormatter):
