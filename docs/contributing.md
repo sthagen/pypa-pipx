@@ -7,6 +7,29 @@ To run the pipx executable from your source tree during development, run pipx fr
 python src/pipx --version
 ```
 
+## Pre-commit
+The use of [pre-commit](https://pre-commit.com/) is recommended.  It can show
+all and fix some lint errors before commit, saving you the trouble of finding
+out later that it failed CI Lint errors, and saving you from having to run `nox
+-s lint` separately.
+
+In the pipx git repository is a `.pre-commit-config.yaml` configuration file
+tailored just for pipx and its lint requirements.  To use pre-commit in your
+clone of the pipx repository, you need to do the following **one-time setup
+procedure**:
+
+1. Install pre-commit using `pipx install pre-commit`
+2. In the top level directory of your clone of the pipx repository, execute `pre-commit install`
+
+Afterwards whenever you commit in this repository, it will first run pipx's
+personalized lint checks.  If it makes a fix to a file (e.g. using `black` or
+`isort`), you will need to `git add` that file again before committing it
+again.  If it can't fix your commit itself, it will tell you what's wrong, and
+you can fix it manually before re-adding the edited files and committing again.
+
+If for some reason you want to commit and skip running pre-commit, you can use
+the switch `git commit --no-verify`.
+
 ## Running Tests
 
 ### Setup
@@ -32,22 +55,26 @@ Sessions defined in /home/csmith/git/pipx/noxfile.py:
 * tests-3.6
 * tests-3.7
 * tests-3.8
+* tests-3.9
 - cover -> Coverage analysis
 * lint
-* docs
 - develop-3.6
 - develop-3.7
 - develop-3.8
+- develop-3.9
 - build
 - publish
-- watch_docs
+* build_docs
 - publish_docs
+- watch_docs
+- pre_release
+- post_release
 ```
 
 ### Unit Tests
-To run unit tests in Python3.7, you can run
+To run unit tests in Python3.9, you can run
 ```
-nox -s tests-3.7
+nox -s tests-3.9
 ```
 
 !!! tip
@@ -82,7 +109,7 @@ When updating pipx docs, make sure you are either modifying a file in the `templ
 
 You can generate the documentation with
 ```
-nox -s docs
+nox -s build_docs
 ```
 
 This will capture CLI documentation for any pipx argument modifications, as well as generate templates to the docs directory.

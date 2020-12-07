@@ -3,17 +3,28 @@ dev
 - Added reinstall command for reinstalling a single venv.
 - Changed `pipx run` on non-Windows systems to actually replace pipx process with the app process instead of running it as a subprocess.  (Now using python's `os.exec*`)
 - [bugfix] Fixed bug with reinstall-all command when package have been installed using a specifier. Now the initial specifier is used.
-- [bugfix] Override display of DEFAULT_PYTHON value when generating web documentation for `pipx install` #523
+- [bugfix] Override display of `PIPX_DEFAULT_PYTHON` value when generating web documentation for `pipx install` #523
 - [bugfix] Wrap help documentation for environment variables.
+- [bugfix] Fixed uninstall crash that could happen on Windows for certain packages
+- [feature] Venv package name arguments now do not have to match exactly as pipx has them stored, but can be specified in any python-package-name-equivalent way. (i.e. case does not matter, and `.`, `-`, `_` characters are interchangeable.)
+- [change] Venvs with a suffix: A suffix can contain any characters, but for purposes of uniqueness, python package name rules apply--upper- and lower-case letters are equivalent, and any number of `.`, `-`, or `_` characters in a row are equivalent.  (e.g. if you have a suffixed venv `pylint_1.0A` you could not add another suffixed venv called `pylint--1-0a`, as it would not be a unique name.)
+- [implementation detail] Pipx shared libraries (providing pip, setuptools, wheel to pipx) are no longer installed using pip arguments taken from the last regular pipx install.  If you need to apply pip arguments to pipx's use of pip for its internal shared libraries, use PIP_\* environment variables.
+- [feature] Autocomplete for venv names is no longer restricted to an exact match to the literal venv name, but will autocomplete any logically-similar python package name (i.e. case does not matter, and `.`, `-`, `_` characters are all equivalent.)
+- pipx now reinstalls its internal shared libraries when the user executes `reinstall-all`.
+- Made sure shell exit codes from every pipx command are correct.  In the past some (like from `pipx upgrade`) were wrong.  The exit code from `pipx runpip` is now the exit code from the `pip` command run.  The exit code from `pipx list` will be 1 if one or more venvs have problems that need to be addressed.
+- pipx now writes a log file for each pipx command executed to `$PIPX_HOME/logs`, typically `~/.local/pipx/logs`.  pipx keeps the most recent 10 logs and deletes others.
+- `pipx upgrade` and `pipx upgrade-all` now have a `--upgrade-injected` option which directs pipx to also upgrade injected packages.
+- `pipx list` now detects, identifies, and suggests a remedy for venvs with old-internal data (internal venv names) that need to be updated.
+- Added a "Troubleshooting" page to the pipx web documentation for common problems pipx users may encounter.
 
 0.15.6.0
 
 - [docs] Update license
-- [docs] Display a more idomatic command for registering completions on fish.
+- [docs] Display a more idiomatic command for registering completions on fish.
 - [bugfix] Fixed regression in list, inject, upgrade, reinstall-all commands when suffixed packages are used.
 - [bugfix] Do not reset package url during upgrade when main package is `pipx`
 - Updated help text to show description for `ensurepath` and `completions` help
-- Added support for user-defined default python interpreter via new PIPX_DEFAULT_PYTHON.  Helpful for use with pyenv among other uses.
+- Added support for user-defined default python interpreter via new `PIPX_DEFAULT_PYTHON`.  Helpful for use with pyenv among other uses.
 - [bugfix] Fixed bug where extras were ignored with a PEP 508 package specification with a URL.
 
 0.15.5.1
@@ -54,7 +65,7 @@ dev
 - [bugfix] Replaced implicit dependency on setuptools with an explicit dependency on packaging (#339).
 - [bugfix] Continue reinstalling packages after failure
 - [bugfix] Hide cursor while pipx runs
-- [feature] Add environment variable `USE_EMOJI` to allow enabling/disabling emojies (#376)
+- [feature] Add environment variable `USE_EMOJI` to allow enabling/disabling emojis (#376)
 - [refactor] Moved all commands to separate files within the commands module (#255).
 - [bugfix] Ignore system shared libraries when installing shared libraries pip, wheel, and setuptools. This also fixes an incompatibility with Debian/Ubuntu's version of pip (#386).
 
@@ -90,13 +101,13 @@ Upgrade instructions: When upgrading to 0.15.0.0 or above from a pre-0.15.0.0 ve
 - `reinstall-all` options `--include-deps`, `--system-site-packages`, `--index-url`, `--editable`, and `--pip-args` were removed. Pipx now uses the original options used to install each application instead. (#222)
 - Handle missing interpreters more gracefully (#146)
 - Change `reinstall-all` to use system python by default for apps. Now use `--python` option to specify a different python version.
-- Remove the PYTHONPATH environment variable when executing any command to prevent conflicts between pipx dependencies and package dependencies when pipx is installed via homebrew. Homebrew can use pythonpath manipulation instead of virtual environments. (#233)
+- Remove the PYTHONPATH environment variable when executing any command to prevent conflicts between pipx dependencies and package dependencies when pipx is installed via homebrew. Homebrew can use PYTHONPATH manipulation instead of virtual environments. (#233)
 - Add printed summary after successful call to `pipx inject`
 - Support associating apps with Python 3.5
 - Improvements to animation status text
 - Make `--python` argument in `reinstall-all` command optional
 - Use threads on OS's without support for semaphores
-- Stricter parsing when passing `--` argument as delimeter
+- Stricter parsing when passing `--` argument as delimiter
 
 0.14.0.0
 
@@ -113,7 +124,7 @@ Upgrade instructions: When upgrading to 0.15.0.0 or above from a pre-0.15.0.0 ve
 
 0.13.2.2
 
-- Remove unneccesary and sometimes incorrect check after `pipx inject` (#195)
+- Remove unnecessary and sometimes incorrect check after `pipx inject` (#195)
 - Make status text/animation reliably disappear before continuing
 - Update animation symbols
 
@@ -173,7 +184,7 @@ Upgrade instructions: When upgrading to 0.15.0.0 or above from a pre-0.15.0.0 ve
 - Add `--include-deps` argument to include binaries of dependent packages when installing with pipx. This improves compatibility with packages that depend on other installed packages, such as `jupyter`.
 - Speed up `pipx list` output (by running multiple processes in parallel) and by collecting all metadata in a single subprocess call
 - More aggressive cache directory removal when `--no-cache` is passed to `pipx run`
-- [dev] Move inline text passed to subprocess calls to their own files to enable autoformating, linting, unit testing
+- [dev] Move inline text passed to subprocess calls to their own files to enable autoformatting, linting, unit testing
 
 0.12.2.0
 

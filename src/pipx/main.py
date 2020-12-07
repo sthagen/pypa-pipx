@@ -3,7 +3,6 @@
 """The command line interface to pipx"""
 
 import argparse
-import functools
 import logging
 import os
 import re
@@ -11,25 +10,30 @@ import shlex
 import shutil
 import sys
 import textwrap
+import time
 import urllib.parse
 from typing import Dict, List
 
 import argcomplete  # type: ignore
+from packaging.utils import canonicalize_name
 
-from . import commands, constants
-from .animate import hide_cursor, show_cursor
-from .colors import bold, green
-from .interpreter import DEFAULT_PYTHON
-from .util import PipxError, mkdir
-from .venv import VenvContainer
-from .version import __version__
+from pipx import commands, constants
+from pipx.animate import hide_cursor, show_cursor
+from pipx.colors import bold, green
+from pipx.constants import ExitCode
+from pipx.interpreter import DEFAULT_PYTHON
+from pipx.util import PipxError, mkdir
+from pipx.venv import VenvContainer
+from pipx.version import __version__
 
 
 def print_version() -> None:
     print(__version__)
 
 
-def indented_wrap(text, subsequent_indent="", split="\n", **kwargs):
+def indented_wrap(
+    text: str, subsequent_indent: str = "", split: str = "\n", **kwargs
+) -> str:
     text = textwrap.dedent(text).strip()
     minimum_width = 40
     width = max(shutil.get_terminal_size((80, 40)).columns, minimum_width) - 2
@@ -110,9 +114,21 @@ INSTALL_DESCRIPTION = textwrap.dedent(
 
 
 class LineWrapRawTextHelpFormatter(argparse.RawDescriptionHelpFormatter):
-    def _split_lines(self, text, width):
+    def _split_lines(self, text: str, width: int) -> List[str]:
         text = self._whitespace_matcher.sub(" ", text).strip()
         return textwrap.wrap(text, width)
+
+
+class InstalledVenvsCompleter:
+    def __init__(self, venv_container: VenvContainer) -> None:
+        self.packages = [str(p.name) for p in sorted(venv_container.iter_venv_dirs())]
+
+    def use(self, prefix: str, **kwargs) -> List[str]:
+        return [
+            f"{prefix}{x[len(prefix):]}"
+            for x in self.packages
+            if x.startswith(canonicalize_name(prefix))
+        ]
 
 
 def get_pip_args(parsed_args: Dict) -> List[str]:
@@ -137,7 +153,7 @@ def get_venv_args(parsed_args: Dict) -> List[str]:
     return venv_args
 
 
-def run_pipx_command(args: argparse.Namespace) -> int:  # noqa: C901
+def run_pipx_command(args: argparse.Namespace) -> ExitCode:  # noqa: C901
     verbose = args.verbose if "verbose" in args else False
     pip_args = get_pip_args(vars(args))
     venv_args = get_venv_args(vars(args))
@@ -156,6 +172,8 @@ def run_pipx_command(args: argparse.Namespace) -> int:  # noqa: C901
 
         venv_dir = venv_container.get_venv_dir(package)
         logging.info(f"Virtual Environment location is {venv_dir}")
+    if "skip" in args:
+        skip_list = [canonicalize_name(x) for x in args.skip]
 
     if args.command == "run":
         package_or_url = (
@@ -177,7 +195,7 @@ def run_pipx_command(args: argparse.Namespace) -> int:  # noqa: C901
             use_cache,
         )
         # error, we should never reach it
-        return 1
+        return ExitCode(1)
     elif args.command == "install":
         return commands.install(
             None,
@@ -193,39 +211,38 @@ def run_pipx_command(args: argparse.Namespace) -> int:  # noqa: C901
             suffix=args.suffix,
         )
     elif args.command == "inject":
-        if not args.include_apps and args.include_deps:
-            raise PipxError(
-                "Cannot pass --include-deps if --include-apps is not passed as well"
-            )
-        for dep in args.dependencies:
-            commands.inject(
-                venv_dir,
-                None,
-                dep,
-                pip_args,
-                verbose=verbose,
-                include_apps=args.include_apps,
-                include_dependencies=args.include_deps,
-                force=args.force,
-            )
-        # TODO: Issue #503 make pipx commands have proper exit codes
-        return 0
+        return commands.inject(
+            venv_dir,
+            None,
+            args.dependencies,
+            pip_args,
+            verbose=verbose,
+            include_apps=args.include_apps,
+            include_dependencies=args.include_deps,
+            force=args.force,
+        )
     elif args.command == "upgrade":
         return commands.upgrade(
-            venv_dir, pip_args, verbose, upgrading_all=False, force=args.force
+            venv_dir,
+            pip_args,
+            verbose,
+            include_injected=args.include_injected,
+            force=args.force,
+        )
+    elif args.command == "upgrade-all":
+        return commands.upgrade_all(
+            venv_container,
+            verbose,
+            include_injected=args.include_injected,
+            skip=skip_list,
+            force=args.force,
         )
     elif args.command == "list":
-        commands.list_packages(venv_container, args.include_injected)
-        # TODO: Issue #503 make pipx commands have proper exit codes
-        return 0
+        return commands.list_packages(venv_container, args.include_injected)
     elif args.command == "uninstall":
         return commands.uninstall(venv_dir, constants.LOCAL_BIN_DIR, verbose)
     elif args.command == "uninstall-all":
         return commands.uninstall_all(venv_container, constants.LOCAL_BIN_DIR, verbose)
-    elif args.command == "upgrade-all":
-        return commands.upgrade_all(
-            venv_container, verbose, skip=args.skip, force=args.force
-        )
     elif args.command == "reinstall":
         return commands.reinstall(
             venv_dir=venv_dir,
@@ -239,7 +256,7 @@ def run_pipx_command(args: argparse.Namespace) -> int:  # noqa: C901
             constants.LOCAL_BIN_DIR,
             args.python,
             verbose,
-            skip=args.skip,
+            skip=skip_list,
         )
     elif args.command == "runpip":
         if not venv_dir:
@@ -249,15 +266,16 @@ def run_pipx_command(args: argparse.Namespace) -> int:  # noqa: C901
         try:
             return commands.ensure_pipx_paths(force=args.force)
         except Exception as e:
+            logging.debug("Uncaught Exception:", exc_info=True)
             raise PipxError(e)
     elif args.command == "completions":
         print(constants.completion_instructions)
-        return 0
+        return ExitCode(0)
     else:
         raise PipxError(f"Unknown command {args.command}")
 
 
-def add_pip_venv_args(parser):
+def add_pip_venv_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--system-site-packages",
         action="store_true",
@@ -276,19 +294,13 @@ def add_pip_venv_args(parser):
     )
 
 
-def add_include_dependencies(parser):
+def add_include_dependencies(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--include-deps", help="Include apps of dependent packages", action="store_true"
     )
 
 
-def _autocomplete_list_of_installed_packages(
-    venv_container: VenvContainer, *args, **kwargs
-) -> List[str]:
-    return list(str(p.name) for p in sorted(venv_container.iter_venv_dirs()))
-
-
-def _add_install(subparsers):
+def _add_install(subparsers) -> None:
     p = subparsers.add_parser(
         "install",
         help="Install a package",
@@ -323,7 +335,7 @@ def _add_install(subparsers):
     add_pip_venv_args(p)
 
 
-def _add_inject(subparsers, autocomplete_list_of_installed_packages):
+def _add_inject(subparsers, venv_completer) -> None:
     p = subparsers.add_parser(
         "inject",
         help="Install packages into an existing Virtual Environment",
@@ -332,7 +344,7 @@ def _add_inject(subparsers, autocomplete_list_of_installed_packages):
     p.add_argument(
         "package",
         help="Name of the existing pipx-managed Virtual Environment to inject into",
-    ).completer = autocomplete_list_of_installed_packages
+    ).completer = venv_completer
     p.add_argument(
         "dependencies",
         nargs="+",
@@ -354,13 +366,18 @@ def _add_inject(subparsers, autocomplete_list_of_installed_packages):
     p.add_argument("--verbose", action="store_true")
 
 
-def _add_upgrade(subparsers, autocomplete_list_of_installed_packages):
+def _add_upgrade(subparsers, venv_completer) -> None:
     p = subparsers.add_parser(
         "upgrade",
         help="Upgrade a package",
         description="Upgrade a package in a pipx-managed Virtual Environment by running 'pip install --upgrade PACKAGE'",
     )
-    p.add_argument("package").completer = autocomplete_list_of_installed_packages
+    p.add_argument("package").completer = venv_completer
+    p.add_argument(
+        "--include-injected",
+        action="store_true",
+        help="Also upgrade packages injected into the main app's environment",
+    )
     p.add_argument(
         "--force",
         "-f",
@@ -371,13 +388,17 @@ def _add_upgrade(subparsers, autocomplete_list_of_installed_packages):
     p.add_argument("--verbose", action="store_true")
 
 
-def _add_upgrade_all(subparsers):
+def _add_upgrade_all(subparsers) -> None:
     p = subparsers.add_parser(
         "upgrade-all",
         help="Upgrade all packages. Runs `pip install -U <pkgname>` for each package.",
         description="Upgrades all packages within their virtual environments by running 'pip install --upgrade PACKAGE'",
     )
-
+    p.add_argument(
+        "--include-injected",
+        action="store_true",
+        help="Also upgrade packages injected into the main app's environment",
+    )
     p.add_argument("--skip", nargs="+", default=[], help="skip these packages")
     p.add_argument(
         "--force",
@@ -388,17 +409,17 @@ def _add_upgrade_all(subparsers):
     p.add_argument("--verbose", action="store_true")
 
 
-def _add_uninstall(subparsers, autocomplete_list_of_installed_packages):
+def _add_uninstall(subparsers, venv_completer) -> None:
     p = subparsers.add_parser(
         "uninstall",
         help="Uninstall a package",
         description="Uninstalls a pipx-managed Virtual Environment by deleting it and any files that point to its apps.",
     )
-    p.add_argument("package").completer = autocomplete_list_of_installed_packages
+    p.add_argument("package").completer = venv_completer
     p.add_argument("--verbose", action="store_true")
 
 
-def _add_uninstall_all(subparsers):
+def _add_uninstall_all(subparsers) -> None:
     p = subparsers.add_parser(
         "uninstall-all",
         help="Uninstall all packages",
@@ -407,7 +428,7 @@ def _add_uninstall_all(subparsers):
     p.add_argument("--verbose", action="store_true")
 
 
-def _add_reinstall(subparsers, autocomplete_list_of_installed_packages):
+def _add_reinstall(subparsers, venv_completer) -> None:
     p = subparsers.add_parser(
         "reinstall",
         formatter_class=LineWrapRawTextHelpFormatter,
@@ -422,7 +443,7 @@ def _add_reinstall(subparsers, autocomplete_list_of_installed_packages):
         """
         ),
     )
-    p.add_argument("package").completer = autocomplete_list_of_installed_packages
+    p.add_argument("package").completer = venv_completer
     p.add_argument(
         "--python",
         default=DEFAULT_PYTHON,
@@ -434,7 +455,7 @@ def _add_reinstall(subparsers, autocomplete_list_of_installed_packages):
     p.add_argument("--verbose", action="store_true")
 
 
-def _add_reinstall_all(subparsers):
+def _add_reinstall_all(subparsers) -> None:
     p = subparsers.add_parser(
         "reinstall-all",
         formatter_class=LineWrapRawTextHelpFormatter,
@@ -463,7 +484,7 @@ def _add_reinstall_all(subparsers):
     p.add_argument("--verbose", action="store_true")
 
 
-def _add_list(subparsers):
+def _add_list(subparsers) -> None:
     p = subparsers.add_parser(
         "list",
         help="List installed packages",
@@ -477,7 +498,7 @@ def _add_list(subparsers):
     p.add_argument("--verbose", action="store_true")
 
 
-def _add_run(subparsers):
+def _add_run(subparsers) -> None:
     p = subparsers.add_parser(
         "run",
         formatter_class=LineWrapRawTextHelpFormatter,
@@ -534,7 +555,7 @@ def _add_run(subparsers):
     p.usage = re.sub(r"\.\.\.", "app ...", p.usage)
 
 
-def _add_runpip(subparsers, autocomplete_list_of_installed_packages):
+def _add_runpip(subparsers, venv_completer) -> None:
     p = subparsers.add_parser(
         "runpip",
         help="Run pip in an existing pipx-managed Virtual Environment",
@@ -543,7 +564,7 @@ def _add_runpip(subparsers, autocomplete_list_of_installed_packages):
     p.add_argument(
         "package",
         help="Name of the existing pipx-managed Virtual Environment to run pip in",
-    ).completer = autocomplete_list_of_installed_packages
+    ).completer = venv_completer
     p.add_argument(
         "pipargs",
         nargs=argparse.REMAINDER,
@@ -553,7 +574,7 @@ def _add_runpip(subparsers, autocomplete_list_of_installed_packages):
     p.add_argument("--verbose", action="store_true")
 
 
-def _add_ensurepath(subparsers):
+def _add_ensurepath(subparsers) -> None:
     p = subparsers.add_parser(
         "ensurepath",
         help=(
@@ -579,12 +600,10 @@ def _add_ensurepath(subparsers):
     )
 
 
-def get_command_parser():
+def get_command_parser() -> argparse.ArgumentParser:
     venv_container = VenvContainer(constants.PIPX_LOCAL_VENVS)
 
-    autocomplete_list_of_installed_packages = functools.partial(
-        _autocomplete_list_of_installed_packages, venv_container
-    )
+    completer_venvs = InstalledVenvsCompleter(venv_container)
 
     parser = argparse.ArgumentParser(
         formatter_class=LineWrapRawTextHelpFormatter, description=PIPX_DESCRIPTION
@@ -595,16 +614,16 @@ def get_command_parser():
     )
 
     _add_install(subparsers)
-    _add_inject(subparsers, autocomplete_list_of_installed_packages)
-    _add_upgrade(subparsers, autocomplete_list_of_installed_packages)
+    _add_inject(subparsers, completer_venvs.use)
+    _add_upgrade(subparsers, completer_venvs.use)
     _add_upgrade_all(subparsers)
-    _add_uninstall(subparsers, autocomplete_list_of_installed_packages)
+    _add_uninstall(subparsers, completer_venvs.use)
     _add_uninstall_all(subparsers)
-    _add_reinstall(subparsers, autocomplete_list_of_installed_packages)
+    _add_reinstall(subparsers, completer_venvs.use)
     _add_reinstall_all(subparsers)
     _add_list(subparsers)
     _add_run(subparsers)
-    _add_runpip(subparsers, autocomplete_list_of_installed_packages)
+    _add_runpip(subparsers, completer_venvs.use)
     _add_ensurepath(subparsers)
 
     parser.add_argument("--version", action="store_true", help="Print version and exit")
@@ -616,19 +635,67 @@ def get_command_parser():
     return parser
 
 
-def setup(args):
+def setup_file_handler() -> logging.Handler:
+    max_logs = 10
+    # don't use utils.mkdir, to prevent emission of log message
+    constants.PIPX_LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+    existing_logs = sorted(constants.PIPX_LOG_DIR.glob("cmd_*.log"))
+    if len(existing_logs) > max_logs:
+        for existing_log in existing_logs[:-max_logs]:
+            try:
+                existing_log.unlink()
+            except FileNotFoundError:
+                pass
+
+    datetime_str = time.strftime("%Y-%m-%d_%H.%M.%S")
+    log_file = constants.PIPX_LOG_DIR / f"cmd_{datetime_str}.log"
+    counter = 1
+    while log_file.exists() and counter < 10:
+        log_file = constants.PIPX_LOG_DIR / f"cmd_{datetime_str}_{counter}.log"
+        counter += 1
+
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(
+        logging.Formatter(
+            "{relativeCreated: >8.1f}ms ({funcName}:{lineno}): {message}", style="{"
+        )
+    )
+    return file_handler
+
+
+def setup_stream_handler(verbose: bool) -> logging.Handler:
+    stream_handler = logging.StreamHandler()
+    if verbose:
+        pipx_str = bold(green("pipx >")) if sys.stdout.isatty() else "pipx >"
+        stream_handler.setLevel(logging.INFO)
+        stream_handler.setFormatter(
+            logging.Formatter(pipx_str + "({funcName}:{lineno}): {message}", style="{")
+        )
+    else:
+        stream_handler.setLevel(logging.WARNING)
+        stream_handler.setFormatter(logging.Formatter("{message}", style="{"))
+    return stream_handler
+
+
+def setup(args: argparse.Namespace) -> None:
     if "version" in args and args.version:
         print_version()
         sys.exit(0)
 
-    if "verbose" in args and args.verbose:
-        pipx_str = bold(green("pipx >")) if sys.stdout.isatty() else "pipx >"
-        format_str = f"{pipx_str} (%(funcName)s:%(lineno)d): %(message)s"
+    # Setup logging so debug and above go to log file,
+    #   info (verbose) or warning (non-verbose) and above go to console
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)
 
-        logging.basicConfig(level=logging.DEBUG, format=format_str)
-    else:
-        logging.basicConfig(level=logging.WARNING, format="%(message)s")
+    file_handler = setup_file_handler()
+    stream_handler = setup_stream_handler("verbose" in args and args.verbose)
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(stream_handler)
 
+    logging.debug(f"{time.strftime('%Y-%m-%d %H:%M:%S')}")
+    logging.debug(f"{' '.join(sys.argv)}")
     logging.info(f"pipx version is {__version__}")
     logging.info(f"Default python interpreter is {repr(DEFAULT_PYTHON)}")
 
@@ -645,7 +712,7 @@ def setup(args):
         )
 
 
-def check_args(parsed_pipx_args: argparse.Namespace):
+def check_args(parsed_pipx_args: argparse.Namespace) -> None:
     if parsed_pipx_args.command == "run":
         # we manually discard a first -- because using nargs=argparse.REMAINDER
         #   will not do it automatically
@@ -659,7 +726,7 @@ def check_args(parsed_pipx_args: argparse.Namespace):
             )
 
 
-def cli() -> int:
+def cli() -> ExitCode:
     """Entry point from command line"""
     try:
         hide_cursor()
@@ -670,13 +737,17 @@ def cli() -> int:
         check_args(parsed_pipx_args)
         if not parsed_pipx_args.command:
             parser.print_help()
-            return 1
+            return ExitCode(1)
         return run_pipx_command(parsed_pipx_args)
     except PipxError as e:
         print(str(e), file=sys.stderr)
-        return 1
+        logging.debug(f"PipxError: {e}", exc_info=True)
+        return ExitCode(1)
     except KeyboardInterrupt:
-        return 1
+        return ExitCode(1)
+    except Exception:
+        logging.debug("Uncaught Exception:", exc_info=True)
+        raise
     finally:
         show_cursor()
 

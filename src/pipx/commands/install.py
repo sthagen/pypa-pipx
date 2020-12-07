@@ -3,6 +3,7 @@ from typing import List, Optional
 
 from pipx import constants
 from pipx.commands.common import package_name_from_spec, run_post_install_actions
+from pipx.constants import EXIT_CODE_INSTALL_VENV_EXISTS, EXIT_CODE_OK, ExitCode
 from pipx.venv import Venv, VenvContainer
 
 
@@ -19,7 +20,8 @@ def install(
     force: bool,
     include_dependencies: bool,
     suffix: str = "",
-):
+) -> ExitCode:
+    """Returns pipx exit code."""
     # package_spec is anything pip-installable, including package_name, vcs spec,
     #   zip file, or tar.gz file.
 
@@ -29,27 +31,25 @@ def install(
         )
     if venv_dir is None:
         venv_container = VenvContainer(constants.PIPX_LOCAL_VENVS)
-        venv_dir = venv_container.get_venv_dir(package_name)
-        if suffix != "":
-            venv_dir = venv_dir.parent / f"{venv_dir.stem}{suffix}"
+        venv_dir = venv_container.get_venv_dir(f"{package_name}{suffix}")
 
     try:
         exists = venv_dir.exists() and next(venv_dir.iterdir())
     except StopIteration:
         exists = False
 
+    venv = Venv(venv_dir, python=python, verbose=verbose)
     if exists:
         if force:
-            print(f"Installing to existing directory {str(venv_dir)!r}")
+            print(f"Installing to existing venv {venv.name!r}")
         else:
             print(
-                f"{venv_dir.name!r} already seems to be installed. "
+                f"{venv.name!r} already seems to be installed. "
                 f"Not modifying existing installation in {str(venv_dir)!r}. "
                 "Pass '--force' to force installation."
             )
-            return
+            return EXIT_CODE_INSTALL_VENV_EXISTS
 
-    venv = Venv(venv_dir, python=python, verbose=verbose)
     try:
         venv.create_venv(venv_args, pip_args)
         venv.install_package(
@@ -73,3 +73,6 @@ def install(
         print("")
         venv.remove_venv()
         raise
+
+    # Any failure to install will raise PipxError, otherwise success
+    return EXIT_CODE_OK

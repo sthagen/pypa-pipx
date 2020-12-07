@@ -4,8 +4,10 @@ import pkgutil
 from pathlib import Path
 from typing import Dict, Generator, List, NamedTuple, Set
 
+from packaging.utils import canonicalize_name
+
 from pipx.animate import animate
-from pipx.constants import PIPX_SHARED_PTH
+from pipx.constants import PIPX_SHARED_PTH, ExitCode
 from pipx.interpreter import DEFAULT_PYTHON
 from pipx.package_specifier import (
     fix_package_name,
@@ -39,14 +41,16 @@ class VenvContainer:
     def __init__(self, root: Path):
         self._root = root
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"VenvContainer({str(self._root)!r})"
 
-    def __str__(self):
+    def __str__(self) -> str:
         return str(self._root)
 
     def iter_venv_dirs(self) -> Generator[Path, None, None]:
         """Iterate venv directories in this container."""
+        if not self._root.is_dir():
+            return
         for entry in self._root.iterdir():
             if not entry.is_dir():
                 continue
@@ -54,9 +58,9 @@ class VenvContainer:
 
     def get_venv_dir(self, package: str) -> Path:
         """Return the expected venv path for given `package`."""
-        return self._root.joinpath(package)
+        return self._root.joinpath(canonicalize_name(package))
 
-    def verify_shared_libs(self):
+    def verify_shared_libs(self) -> None:
         for p in self.iter_venv_dirs():
             Venv(p)
 
@@ -90,9 +94,9 @@ class Venv:
         if self._existing and self.uses_shared_libs:
             if shared_libs.is_valid:
                 if shared_libs.needs_upgrade:
-                    shared_libs.upgrade([], verbose)
+                    shared_libs.upgrade(verbose=verbose)
             else:
-                shared_libs.create([], verbose)
+                shared_libs.create(verbose)
 
             if not shared_libs.is_valid:
                 raise PipxError(
@@ -101,6 +105,17 @@ class Venv:
                     "package. For example,\n"
                     f"  pipx install {self.root.name} --force"
                 )
+
+    @property
+    def name(self) -> str:
+        if self.pipx_metadata.main_package.package is not None:
+            venv_name = (
+                f"{self.pipx_metadata.main_package.package}"
+                f"{self.pipx_metadata.main_package.suffix}"
+            )
+        else:
+            venv_name = self.root.name
+        return venv_name
 
     @property
     def uses_shared_libs(self) -> bool:
@@ -133,7 +148,7 @@ class Venv:
         with animate("creating virtual environment", self.do_animation):
             cmd = [self.python, "-m", "venv", "--without-pip"]
             run_verify(cmd + venv_args + [str(self.root)])
-        shared_libs.create(pip_args, self.verbose)
+        shared_libs.create(self.verbose)
         pipx_pth = get_site_packages(self.python_path) / PIPX_SHARED_PTH
         # write path pointing to the shared libs site-packages directory
         # example pipx_pth location:
@@ -163,7 +178,7 @@ class Venv:
 
     def upgrade_packaging_libraries(self, pip_args: List[str]) -> None:
         if self.uses_shared_libs:
-            shared_libs.upgrade(pip_args, self.verbose)
+            shared_libs.upgrade(verbose=self.verbose)
         else:
             # TODO: setuptools and wheel? Original code didn't bother
             # but shared libs code does.
@@ -371,3 +386,15 @@ class Venv:
         if not self.verbose:
             cmd.append("-q")
         run_verify(cmd)
+
+    def run_pip_get_exit_code(self, cmd: List[str]) -> ExitCode:
+        cmd = [str(self.python_path), "-m", "pip"] + cmd
+        if not self.verbose:
+            cmd.append("-q")
+        returncode = run_subprocess(
+            cmd, capture_stdout=False, capture_stderr=False
+        ).returncode
+        if returncode:
+            cmd_str = " ".join(str(c) for c in cmd)
+            logging.error(f"{cmd_str!r} failed")
+        return ExitCode(returncode)

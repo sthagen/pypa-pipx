@@ -7,9 +7,10 @@ import time
 from pathlib import Path
 from shutil import which
 from tempfile import TemporaryDirectory
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set, Tuple
 
 import userpath  # type: ignore
+from packaging.utils import canonicalize_name
 
 from pipx import constants
 from pipx.colors import bold, red
@@ -20,8 +21,33 @@ from pipx.util import WINDOWS, PipxError, mkdir, rmdir
 from pipx.venv import Venv
 
 
+class VenvProblems:
+    def __init__(
+        self,
+        bad_venv_name: bool = False,
+        invalid_interpreter: bool = False,
+        missing_metadata: bool = False,
+        not_installed: bool = False,
+    ) -> None:
+        self.bad_venv_name = bad_venv_name
+        self.invalid_interpreter = invalid_interpreter
+        self.missing_metadata = missing_metadata
+        self.not_installed = not_installed
+
+    def any_(self) -> bool:
+        return any(self.__dict__.values())
+
+    def or_(self, venv_problems: "VenvProblems") -> None:
+        for attribute in self.__dict__:
+            setattr(
+                self,
+                attribute,
+                getattr(self, attribute) or getattr(venv_problems, attribute),
+            )
+
+
 def expose_apps_globally(
-    local_bin_dir: Path, app_paths: List[Path], *, force: bool, suffix: str = "",
+    local_bin_dir: Path, app_paths: List[Path], *, force: bool, suffix: str = ""
 ) -> None:
     if not _can_symlink(local_bin_dir):
         _copy_package_apps(local_bin_dir, app_paths, suffix=suffix)
@@ -54,7 +80,7 @@ def _can_symlink(local_bin_dir: Path) -> bool:
 
 
 def _copy_package_apps(
-    local_bin_dir: Path, app_paths: List[Path], suffix: str = "",
+    local_bin_dir: Path, app_paths: List[Path], suffix: str = ""
 ) -> None:
     for src_unresolved in app_paths:
         src = src_unresolved.resolve()
@@ -70,7 +96,7 @@ def _copy_package_apps(
 
 
 def _symlink_package_apps(
-    local_bin_dir: Path, app_paths: List[Path], *, force: bool, suffix: str = "",
+    local_bin_dir: Path, app_paths: List[Path], *, force: bool, suffix: str = ""
 ) -> None:
     for app_path in app_paths:
         app_name = app_path.name
@@ -122,7 +148,7 @@ def get_package_summary(
     package: str = None,
     new_install: bool = False,
     include_injected: bool = False,
-) -> str:
+) -> Tuple[str, VenvProblems]:
     venv = Venv(venv_dir)
     python_path = venv.python_path.resolve()
 
@@ -130,19 +156,29 @@ def get_package_summary(
         package = venv.main_package_name
 
     if not python_path.is_file():
-        return f"   package {red(bold(venv_dir.name))} has invalid interpreter {str(python_path)}"
+        return (
+            f"   package {red(bold(venv_dir.name))} has invalid interpreter {str(python_path)}",
+            VenvProblems(invalid_interpreter=True),
+        )
     if not venv.package_metadata:
         return (
-            f"   package {red(bold(venv_dir.name))} has missing internal pipx metadata.\n"
-            f"       It was likely installed using a pipx version before 0.15.0.0.\n"
-            f"       Please uninstall and install this package, or reinstall-all to fix."
+            f"   package {red(bold(venv_dir.name))} has missing internal pipx metadata.",
+            VenvProblems(missing_metadata=True),
+        )
+    if venv_dir.name != canonicalize_name(venv_dir.name):
+        return (
+            f"   package {red(bold(venv_dir.name))} needs its internal data updated.",
+            VenvProblems(bad_venv_name=True),
         )
 
     package_metadata = venv.package_metadata[package]
 
     if package_metadata.package_version is None:
-        not_installed = red("is not installed")
-        return f"   package {bold(package)} {not_installed} in the venv {venv_dir.name}"
+        return (
+            f"   package {red(bold(package))} {red('is not installed')} "
+            f"in the venv {venv_dir.name}",
+            VenvProblems(not_installed=True),
+        )
 
     apps = package_metadata.apps + package_metadata.apps_of_dependencies
     exposed_app_paths = _get_exposed_app_paths_for_package(
@@ -160,22 +196,25 @@ def get_package_summary(
         if venv.pipx_metadata.python_version is not None
         else ""
     )
-    return _get_list_output(
-        python_version,
-        python_path,
-        package_metadata.package_version,
-        package,
-        new_install,
-        exposed_binary_names,
-        unavailable_binary_names,
-        venv.pipx_metadata.injected_packages if include_injected else None,
-        suffix=package_metadata.suffix,
+    return (
+        _get_list_output(
+            python_version,
+            python_path,
+            package_metadata.package_version,
+            package,
+            new_install,
+            exposed_binary_names,
+            unavailable_binary_names,
+            venv.pipx_metadata.injected_packages if include_injected else None,
+            suffix=package_metadata.suffix,
+        ),
+        VenvProblems(),
     )
 
 
 def _get_exposed_app_paths_for_package(
     venv_bin_path: Path, package_binary_names: List[str], local_bin_dir: Path
-):
+) -> Set[Path]:
     bin_symlinks = set()
     for b in local_bin_dir.iterdir():
         try:
@@ -270,7 +309,7 @@ def run_post_install_actions(
     include_dependencies: bool,
     *,
     force: bool,
-):
+) -> None:
     package_metadata = venv.package_metadata[package]
 
     display_name = f"{package}{package_metadata.suffix}"
@@ -328,15 +367,18 @@ def run_post_install_actions(
     if include_dependencies:
         for _, app_paths in package_metadata.app_paths_of_dependencies.items():
             expose_apps_globally(
-                local_bin_dir, app_paths, force=force, suffix=package_metadata.suffix,
+                local_bin_dir, app_paths, force=force, suffix=package_metadata.suffix
             )
 
-    print(get_package_summary(venv_dir, package=package, new_install=True,))
+    package_summary, _ = get_package_summary(
+        venv_dir, package=package, new_install=True
+    )
+    print(package_summary)
     warn_if_not_on_path(local_bin_dir)
     print(f"done! {stars}", file=sys.stderr)
 
 
-def warn_if_not_on_path(local_bin_dir: Path):
+def warn_if_not_on_path(local_bin_dir: Path) -> None:
     if not userpath.in_current_path(str(local_bin_dir)):
         logging.warning(
             f"{hazard}  Note: {str(local_bin_dir)!r} is not on your PATH environment "
