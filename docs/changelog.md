@@ -1,5 +1,12 @@
 dev
 
+- Fix cursor show/hide to work with older versions of Windows. (#610)
+- Support text colors on Windows. (#612)
+- Better platform unicode detection to avoid errors and allow showing emojis when possible. (#614)
+
+0.16.0.0
+
+- New venv inspection!  The code that pipx uses to examine and determine metadata in an installed venv has been made faster, better, and more reliable.  It now uses modern python libraries like `packaging` and `importlib.metadata` to examine installed venvs.  It also now properly handles installed package extras.  In addition, some problems pipx has had with certain characters (like periods) in package names should be remedied.
 - Added reinstall command for reinstalling a single venv.
 - Changed `pipx run` on non-Windows systems to actually replace pipx process with the app process instead of running it as a subprocess.  (Now using python's `os.exec*`)
 - [bugfix] Fixed bug with reinstall-all command when package have been installed using a specifier. Now the initial specifier is used.
@@ -16,6 +23,7 @@ dev
 - `pipx upgrade` and `pipx upgrade-all` now have a `--upgrade-injected` option which directs pipx to also upgrade injected packages.
 - `pipx list` now detects, identifies, and suggests a remedy for venvs with old-internal data (internal venv names) that need to be updated.
 - Added a "Troubleshooting" page to the pipx web documentation for common problems pipx users may encounter.
+- pipx error, warning, and other messages now word-wrap so words are not split across lines.  Their appearance is also now more consistent.
 
 0.15.6.0
 

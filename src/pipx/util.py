@@ -3,8 +3,9 @@ import os
 import shutil
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import Dict, List, NoReturn, Optional, Sequence, Tuple, Union
 
 from pipx.animate import show_cursor
 from pipx.constants import WINDOWS
@@ -13,7 +14,11 @@ logger = logging.getLogger(__name__)
 
 
 class PipxError(Exception):
-    pass
+    def __init__(self, message: str, wrap_message: bool = True):
+        if wrap_message:
+            super().__init__(pipx_wrap(message))
+        else:
+            super().__init__(message)
 
 
 def rmdir(path: Path) -> None:
@@ -44,7 +49,7 @@ def get_pypackage_bin_path(binary_name: str) -> Path:
     )
 
 
-def run_pypackage_bin(bin_path: Path, args: List[str]) -> None:
+def run_pypackage_bin(bin_path: Path, args: List[str]) -> NoReturn:
     def _get_env() -> Dict[str, str]:
         env = dict(os.environ)
         env["PYTHONPATH"] = os.path.pathsep.join(
@@ -149,7 +154,9 @@ def subprocess_post_check(
             logger.info(f"{' '.join(completed_process.args)!r} failed")
 
 
-def exec_app(cmd: Sequence[Union[str, Path]], env: Dict[str, str] = None) -> None:
+def exec_app(
+    cmd: Sequence[Union[str, Path]], env: Optional[Dict[str, str]] = None,
+) -> NoReturn:
     """Run command, do not return
 
     POSIX: replace current processs with command using os.exec*()
@@ -162,7 +169,6 @@ def exec_app(cmd: Sequence[Union[str, Path]], env: Dict[str, str] = None) -> Non
 
     # make sure we show cursor again before handing over control
     show_cursor()
-    sys.stderr.flush()
 
     logger.info("exec_app: " + " ".join([str(c) for c in cmd]))
 
@@ -186,3 +192,32 @@ def full_package_description(package: str, package_spec: str) -> str:
         return package
     else:
         return f"{package} from spec {package_spec!r}"
+
+
+def pipx_wrap(
+    text: str, subsequent_indent: str = "", keep_newlines: bool = False
+) -> str:
+    """Dedent, strip, wrap to shell width. Don't break on hyphens, only spaces"""
+    minimum_width = 40
+    width = max(shutil.get_terminal_size((80, 40)).columns, minimum_width) - 2
+
+    text = textwrap.dedent(text).strip()
+    if keep_newlines:
+        return "\n".join(
+            [
+                textwrap.fill(
+                    line,
+                    width=width,
+                    subsequent_indent=subsequent_indent,
+                    break_on_hyphens=False,
+                )
+                for line in text.splitlines()
+            ]
+        )
+    else:
+        return textwrap.fill(
+            text,
+            width=width,
+            subsequent_indent=subsequent_indent,
+            break_on_hyphens=False,
+        )

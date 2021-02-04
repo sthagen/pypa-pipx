@@ -1,14 +1,15 @@
 import os
-import re
 import sys
 from unittest import mock
 
 import pytest  # type: ignore
 
-from helpers import run_pipx_cli, which_python
+from helpers import app_name, run_pipx_cli, unwrap_log_text, which_python
+from package_info import PKG
 from pipx import constants
 
 PYTHON3_5 = which_python("python3.5")
+TEST_DATA_PATH = "./testdata/test_package_specifier"
 
 
 def test_help_text(monkeypatch, capsys):
@@ -38,31 +39,42 @@ def install_package(capsys, pipx_temp_env, caplog, package, package_name=""):
     assert "WARNING" not in caplog.text
 
 
-@pytest.mark.parametrize("package", ["pycowsay", "black"])
-def test_install_easy_packages(capsys, pipx_temp_env, caplog, package):
-    install_package(capsys, pipx_temp_env, caplog, package)
+@pytest.mark.parametrize(
+    "package_name, package_spec",
+    [("pycowsay", "pycowsay"), ("black", PKG["black"]["spec"])],
+)
+def test_install_easy_packages(
+    capsys, pipx_temp_env, caplog, package_name, package_spec
+):
+    install_package(capsys, pipx_temp_env, caplog, package_spec, package_name)
 
 
 @pytest.mark.parametrize(
-    "package", ["cloudtoken", "awscli", "ansible==2.9.13", "shell-functools"]
+    "package_name, package_spec",
+    [
+        ("cloudtoken", PKG["cloudtoken"]["spec"]),
+        ("awscli", PKG["awscli"]["spec"]),
+        ("ansible", PKG["ansible"]["spec"]),
+        ("shell-functools", PKG["shell-functools"]["spec"]),
+    ],
 )
-def test_install_tricky_packages(capsys, pipx_temp_env, caplog, package):
+def test_install_tricky_packages(
+    capsys, pipx_temp_env, caplog, package_name, package_spec
+):
     if os.getenv("FAST"):
         pytest.skip("skipping slow tests")
-    if sys.platform.startswith("win") and package == "ansible==2.9.13":
+    if sys.platform.startswith("win") and package_name == "ansible":
         pytest.skip("Ansible is not installable on Windows")
 
-    install_package(
-        capsys, pipx_temp_env, caplog, package, re.sub(r"==.+$", "", package)
-    )
+    install_package(capsys, pipx_temp_env, caplog, package_spec, package_name)
 
 
 # TODO: Add git+... spec when git is in binpath of tests (Issue #303)
 @pytest.mark.parametrize(
-    "package_name,package_spec",
+    "package_name, package_spec",
     [
         # ("nox", "git+https://github.com/cs01/nox.git@5ea70723e9e6"),
-        ("pylint", "pylint==2.3.1"),
+        ("pylint", PKG["pylint"]["spec"]),
         ("black", "https://github.com/ambv/black/archive/18.9b0.zip"),
     ],
 )
@@ -105,17 +117,46 @@ def test_install_same_package_twice_no_force(pipx_temp_env, capsys):
 
 
 def test_include_deps(pipx_temp_env, capsys):
-    assert run_pipx_cli(["install", "jupyter==1.0.0"]) == 1
-    assert not run_pipx_cli(["install", "jupyter==1.0.0", "--include-deps"])
+    assert run_pipx_cli(["install", PKG["jupyter"]["spec"]]) == 1
+    assert not run_pipx_cli(["install", PKG["jupyter"]["spec"], "--include-deps"])
+
+
+@pytest.mark.parametrize(
+    "package_name, package_spec",
+    [
+        ("jaraco-financial", "jaraco.financial==2.0.0"),
+        ("tox-ini-fmt", PKG["tox-ini-fmt"]["spec"]),
+    ],
+)
+def test_name_tricky_characters(
+    caplog, capsys, pipx_temp_env, package_name, package_spec
+):
+    install_package(capsys, pipx_temp_env, caplog, package_spec, package_name)
+
+
+def test_extra(pipx_temp_env, capsys):
+    assert not run_pipx_cli(["install", "nox[tox_to_nox]==2020.8.22", "--include-deps"])
+    captured = capsys.readouterr()
+    assert f"- {app_name('tox')}\n" in captured.out
+
+
+def test_install_local_extra(pipx_temp_env, capsys):
+    assert not run_pipx_cli(
+        ["install", TEST_DATA_PATH + "/local_extras[cow]", "--include-deps"]
+    )
+    captured = capsys.readouterr()
+    assert f"- {app_name('pycowsay')}\n" in captured.out
 
 
 def test_path_warning(pipx_temp_env, capsys, monkeypatch, caplog):
     assert not run_pipx_cli(["install", "pycowsay"])
-    assert "is not on your PATH environment variable" not in caplog.text
+    assert "is not on your PATH environment variable" not in unwrap_log_text(
+        caplog.text
+    )
 
     monkeypatch.setenv("PATH", "")
     assert not run_pipx_cli(["install", "pycowsay", "--force"])
-    assert "is not on your PATH environment variable" in caplog.text
+    assert "is not on your PATH environment variable" in unwrap_log_text(caplog.text)
 
 
 def test_existing_symlink_points_to_existing_wrong_location_warning(
@@ -128,14 +169,14 @@ def test_existing_symlink_points_to_existing_wrong_location_warning(
     (constants.LOCAL_BIN_DIR / "pycowsay").symlink_to(os.devnull)
     assert not run_pipx_cli(["install", "pycowsay"])
     captured = capsys.readouterr()
-    assert "File exists at" in caplog.text
+    assert "File exists at" in unwrap_log_text(caplog.text)
     assert "symlink missing or pointing to unexpected location" in captured.out
     # bin dir was on path, so the warning should NOT appear (even though the symlink
     # pointed to the wrong location)
     assert "is not on your PATH environment variable" not in captured.err
 
 
-def test_existing_symlink_points_to_nothing(pipx_temp_env, caplog, capsys):
+def test_existing_symlink_points_to_nothing(pipx_temp_env, capsys):
     if sys.platform.startswith("win"):
         pytest.skip("pipx does not use symlinks on Windows")
 
@@ -155,9 +196,7 @@ def test_install_python3_5(pipx_temp_env):
         pytest.skip("python3.5 not on PATH")
 
 
-def test_pip_args_forwarded_to_package_name_determination(
-    pipx_temp_env, caplog, capsys
-):
+def test_pip_args_forwarded_to_package_name_determination(pipx_temp_env, capsys):
     assert run_pipx_cli(
         [
             "install",

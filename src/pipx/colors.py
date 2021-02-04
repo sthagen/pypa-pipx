@@ -1,9 +1,12 @@
-import os
 import sys
 from typing import Callable
 
-USING_WINDOWS = os.name == "nt"
-PRINT_COLOR = not USING_WINDOWS and sys.stdout.isatty()
+import colorama  # type: ignore
+
+PRINT_COLOR = sys.stdout.isatty()
+
+if PRINT_COLOR:
+    colorama.init()
 
 
 class c:

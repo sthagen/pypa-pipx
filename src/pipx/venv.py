@@ -1,17 +1,19 @@
 import json
 import logging
-import pkgutil
+import time
 from pathlib import Path
 from subprocess import CompletedProcess
-from typing import Dict, Generator, List, NamedTuple, Set
+from typing import Dict, Generator, List, NoReturn, Set
 
 from packaging.utils import canonicalize_name
 
 from pipx.animate import animate
 from pipx.constants import PIPX_SHARED_PTH, ExitCode
+from pipx.emojis import hazard
 from pipx.interpreter import DEFAULT_PYTHON
 from pipx.package_specifier import (
     fix_package_name,
+    get_extras,
     parse_specifier_for_install,
     parse_specifier_for_metadata,
 )
@@ -23,19 +25,14 @@ from pipx.util import (
     full_package_description,
     get_site_packages,
     get_venv_paths,
+    pipx_wrap,
     rmdir,
     run_subprocess,
     subprocess_post_check,
 )
+from pipx.venv_inspect import VenvMetadata, inspect_venv
 
 logger = logging.getLogger(__name__)
-
-venv_metadata_inspector_raw = pkgutil.get_data("pipx", "venv_metadata_inspector.py")
-assert venv_metadata_inspector_raw is not None, (
-    "pipx could not find required file venv_metadata_inspector.py. "
-    "Please report this error at https://github.com/pipxproject/pipx. Exiting."
-)
-VENV_METADATA_INSPECTOR = venv_metadata_inspector_raw.decode("utf-8")
 
 
 class VenvContainer:
@@ -68,15 +65,6 @@ class VenvContainer:
             Venv(p)
 
 
-class VenvMetadata(NamedTuple):
-    apps: List[str]
-    app_paths: List[Path]
-    apps_of_dependencies: List[str]
-    app_paths_of_dependencies: Dict[str, List[Path]]
-    package_version: str
-    python_version: str
-
-
 class Venv:
     """Abstraction for a virtual environment with various useful methods for pipx"""
 
@@ -103,10 +91,15 @@ class Venv:
 
             if not shared_libs.is_valid:
                 raise PipxError(
-                    f"Error: pipx's shared venv {shared_libs.root} is invalid and "
-                    "needs re-installation. To fix this, install or reinstall a "
-                    "package. For example,\n"
-                    f"  pipx install {self.root.name} --force"
+                    pipx_wrap(
+                        f"""
+                        Error: pipx's shared venv {shared_libs.root} is invalid
+                        and needs re-installation. To fix this, install or
+                        reinstall a package. For example:
+                        """
+                    )
+                    + f"\n  pipx install {self.root.name} --force",
+                    wrap_message=False,
                 )
 
     @property
@@ -177,8 +170,13 @@ class Venv:
             rmdir(self.root)
         else:
             logger.warning(
-                f"Not removing existing venv {self.root} because "
-                "it was not created in this session"
+                pipx_wrap(
+                    f"""
+                    {hazard}  Not removing existing venv {self.root} because it
+                    was not created in this session
+                    """,
+                    subsequent_indent=" " * 4,
+                )
             )
 
     def upgrade_packaging_libraries(self, pip_args: List[str]) -> None:
@@ -219,8 +217,7 @@ class Venv:
         subprocess_post_check(pip_process, raise_error=False)
         if pip_process.returncode:
             raise PipxError(
-                f"Error installing "
-                f"{full_package_description(package, package_or_url)}."
+                f"Error installing {full_package_description(package, package_or_url)}."
             )
 
         self._update_package_metadata(
@@ -239,7 +236,8 @@ class Venv:
                 f"Unable to install "
                 f"{full_package_description(package, package_or_url)}.\n"
                 f"Check the name or spec for errors, and verify that it can "
-                f"be installed with pip."
+                f"be installed with pip.",
+                wrap_message=False,
             )
 
     def install_package_no_deps(self, package_or_url: str, pip_args: List[str]) -> str:
@@ -252,8 +250,10 @@ class Venv:
         subprocess_post_check(pip_process, raise_error=False)
         if pip_process.returncode:
             raise PipxError(
-                f"Cannot determine package name from spec {package_or_url!r}. "
-                f"Check package spec for errors."
+                f"""
+                Cannot determine package name from spec {package_or_url!r}.
+                Check package spec for errors.
+                """
             )
 
         installed_packages = self.list_installed_packages() - old_package_set
@@ -264,49 +264,25 @@ class Venv:
             logger.info(f"old_package_set = {old_package_set}")
             logger.info(f"install_packages = {installed_packages}")
             raise PipxError(
-                f"Cannot determine package name from spec {package_or_url!r}. "
-                f"Check package spec for errors."
+                f"""
+                Cannot determine package name from spec {package_or_url!r}.
+                Check package spec for errors.
+                """
             )
 
         return package
 
-    def get_venv_metadata_for_package(self, package: str) -> VenvMetadata:
-        data = json.loads(
-            run_subprocess(
-                [
-                    self.python_path,
-                    "-c",
-                    VENV_METADATA_INSPECTOR,
-                    package,
-                    self.bin_path,
-                ],
-                capture_stderr=False,
-                log_cmd_str=" ".join(
-                    [
-                        str(self.python_path),
-                        "-c",
-                        "<contents of venv_metadata_inspector.py>",
-                        package,
-                        str(self.bin_path),
-                    ]
-                ),
-            ).stdout
+    def get_venv_metadata_for_package(
+        self, package: str, package_extras: Set[str]
+    ) -> VenvMetadata:
+        data_start = time.time()
+        venv_metadata = inspect_venv(
+            package, package_extras, self.bin_path, self.python_path
         )
-
-        venv_metadata_traceback = data.pop("exception_traceback", None)
-        if venv_metadata_traceback is not None:
-            logger.error("Internal error with venv metadata inspection.")
-            logger.info(
-                f"venv_metadata_inspector.py Traceback:\n{venv_metadata_traceback}"
-            )
-
-        data["app_paths"] = [Path(p) for p in data["app_paths"]]
-        for dep in data["app_paths_of_dependencies"]:
-            data["app_paths_of_dependencies"][dep] = [
-                Path(p) for p in data["app_paths_of_dependencies"][dep]
-            ]
-
-        return VenvMetadata(**data)
+        logger.info(
+            f"get_venv_metadata_for_package: {1e3*(time.time()-data_start):.0f}ms"
+        )
+        return venv_metadata
 
     def _update_package_metadata(
         self,
@@ -318,7 +294,9 @@ class Venv:
         is_main_package: bool,
         suffix: str = "",
     ) -> None:
-        venv_package_metadata = self.get_venv_metadata_for_package(package)
+        venv_package_metadata = self.get_venv_metadata_for_package(
+            package, get_extras(package_or_url)
+        )
         package_info = PackageInfo(
             package=package,
             package_or_url=parse_specifier_for_metadata(package_or_url),
@@ -349,8 +327,8 @@ class Venv:
         pip_list = json.loads(cmd_run.stdout.strip())
         return set([x["name"] for x in pip_list])
 
-    def run_app(self, app: str, app_args: List[str]) -> None:
-        exec_app([str(self.bin_path / app)] + app_args)
+    def run_app(self, app: str, filename: str, app_args: List[str]) -> NoReturn:
+        exec_app([str(self.bin_path / filename)] + app_args)
 
     def _upgrade_package_no_metadata(self, package: str, pip_args: List[str]) -> None:
         with animate(

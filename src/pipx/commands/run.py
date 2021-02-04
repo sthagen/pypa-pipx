@@ -6,17 +6,17 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 from shutil import which
-from typing import List
+from typing import List, NoReturn
 
 from pipx import constants
 from pipx.commands.common import package_name_from_spec
-from pipx.constants import TEMP_VENV_EXPIRATION_THRESHOLD_DAYS
-from pipx.emojies import hazard
+from pipx.constants import TEMP_VENV_EXPIRATION_THRESHOLD_DAYS, WINDOWS
+from pipx.emojis import hazard
 from pipx.util import (
-    WINDOWS,
     PipxError,
     exec_app,
     get_pypackage_bin_path,
+    pipx_wrap,
     rmdir,
     run_pypackage_bin,
 )
@@ -38,7 +38,7 @@ def run(
     pypackages: bool,
     verbose: bool,
     use_cache: bool,
-) -> None:
+) -> NoReturn:
     """Installs venv to temporary dir (or reuses cache), then runs app from
     package
     """
@@ -46,57 +46,64 @@ def run(
     if urllib.parse.urlparse(app).scheme:
         if not app.endswith(".py"):
             raise PipxError(
-                "pipx will only execute apps from the internet directly if "
-                "they end with '.py'. To run from an SVN, try pipx --spec URL BINARY"
+                """
+                pipx will only execute apps from the internet directly if they
+                end with '.py'. To run from an SVN, try pipx --spec URL BINARY
+                """
             )
         logger.info("Detected url. Downloading and executing as a Python file.")
 
         content = _http_get_request(app)
-        # This never returns
         exec_app([str(python), "-c", content])
 
     elif which(app):
         logger.warning(
-            f"{hazard}  {app} is already on your PATH and installed at "
-            f"{which(app)}. Downloading and "
-            "running anyway."
+            pipx_wrap(
+                f"""
+                {hazard}  {app} is already on your PATH and installed at
+                {which(app)}. Downloading and running anyway.
+                """,
+                subsequent_indent=" " * 4,
+            )
         )
 
-    if WINDOWS and not app.endswith(".exe"):
-        app = f"{app}.exe"
-        logger.info(f"Assuming app is {app!r} (Windows only)")
+    if WINDOWS:
+        app_filename = f"{app}.exe"
+        logger.info(f"Assuming app is {app_filename!r} (Windows only)")
+    else:
+        app_filename = app
 
     pypackage_bin_path = get_pypackage_bin_path(app)
     if pypackage_bin_path.exists():
         logger.info(
             f"Using app in local __pypackages__ directory at {str(pypackage_bin_path)}"
         )
-        # This never returns
         run_pypackage_bin(pypackage_bin_path, app_args)
     if pypackages:
         raise PipxError(
-            f"'--pypackages' flag was passed, but {str(pypackage_bin_path)!r} was "
-            "not found. See https://github.com/cs01/pythonloc to learn how to "
-            "install here, or omit the flag."
+            f"""
+            '--pypackages' flag was passed, but {str(pypackage_bin_path)!r} was
+            not found. See https://github.com/cs01/pythonloc to learn how to
+            install here, or omit the flag.
+            """
         )
 
     venv_dir = _get_temporary_venv_path(package_or_url, python, pip_args, venv_args)
 
     venv = Venv(venv_dir)
-    bin_path = venv.bin_path / app
+    bin_path = venv.bin_path / app_filename
     _prepare_venv_cache(venv, bin_path, use_cache)
 
     if bin_path.exists():
         logger.info(f"Reusing cached venv {venv_dir}")
-        # This never returns
-        venv.run_app(app, app_args)
+        venv.run_app(app, app_filename, app_args)
     else:
         logger.info(f"venv location is {venv_dir}")
-        # This never returns
         _download_and_run(
             Path(venv_dir),
             package_or_url,
             app,
+            app_filename,
             app_args,
             python,
             pip_args,
@@ -110,13 +117,14 @@ def _download_and_run(
     venv_dir: Path,
     package_or_url: str,
     app: str,
+    app_filename: str,
     app_args: List[str],
     python: str,
     pip_args: List[str],
     venv_args: List[str],
     use_cache: bool,
     verbose: bool,
-) -> None:
+) -> NoReturn:
     venv = Venv(venv_dir, python=python, verbose=verbose)
     venv.create_venv(venv_args, pip_args)
 
@@ -136,20 +144,20 @@ def _download_and_run(
         is_main_package=True,
     )
 
-    if not (venv.bin_path / app).exists():
+    if not (venv.bin_path / app_filename).exists():
         apps = venv.pipx_metadata.main_package.apps
         raise PipxError(
-            f"'{app}' executable script not found in package '{package_or_url}'. "
-            "Available executable scripts: "
-            f"{', '.join(b for b in apps)}"
+            f"""
+            '{app}' executable script not found in package '{package_or_url}'.
+            Available executable scripts: {', '.join(b for b in apps)}
+            """
         )
 
     if not use_cache:
         # Let future _remove_all_expired_venvs know to remove this
         (venv_dir / VENV_EXPIRED_FILENAME).touch()
 
-    # This never returns
-    venv.run_app(app, app_args)
+    venv.run_app(app, app_filename, app_args)
 
 
 def _get_temporary_venv_path(
