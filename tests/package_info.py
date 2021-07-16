@@ -11,7 +11,7 @@ def _exe_if_win(apps):
 
 
 # Versions of all packages possibly used in our tests
-# Only apply _app_names to entry_points, NOT scripts
+# Only apply _exe_if_win to entry_points, NOT scripts
 PKG: Dict[str, Dict[str, Any]] = {
     "ansible": {
         "spec": "ansible==2.9.13",
@@ -273,9 +273,7 @@ PKG: Dict[str, Dict[str, Any]] = {
     "howdoi": {
         "spec": "howdoi==2.0.7",
         "apps": _exe_if_win(["howdoi"]),
-        "apps_of_dependencies": _exe_if_win(
-            ["chardetect", "keep", "pygmentize", "pyjwt"]
-        ),
+        "apps_of_dependencies": _exe_if_win(["chardetect", "keep", "pygmentize"]),
     },
     "httpie": {
         "spec": "httpie==2.3.0",
@@ -340,10 +338,10 @@ PKG: Dict[str, Dict[str, Any]] = {
         ),
     },
     "kaggle": {
-        "spec": "kaggle==1.5.9",
+        "spec": "kaggle==1.5.12",
         "apps": _exe_if_win(["kaggle"]),
         "apps_of_dependencies": list(
-            set(_exe_if_win(["chardetect", "slugify", "tqdm"]) + ["slugify"])
+            set(_exe_if_win(["chardetect", "slugify", "tqdm"]))
         ),
     },
     "kibitzr": {
@@ -379,7 +377,8 @@ PKG: Dict[str, Dict[str, Any]] = {
     "localstack": {
         "spec": "localstack==0.12.1",
         "apps": ["localstack", "localstack.bat"],
-        "apps_of_dependencies": _exe_if_win(["chardetect"]) + ["jp.py"],
+        "apps_of_dependencies": _exe_if_win(["chardetect", "dulwich"])
+        + ["jp.py", "dul-receive-pack", "dul-upload-pack"],
     },
     "mackup": {
         "spec": "mackup==0.8.29",
@@ -485,6 +484,7 @@ PKG: Dict[str, Dict[str, Any]] = {
             "register-python-argcomplete",
         ],  # from argcomplete
     },
+    "pbr": {"spec": "pbr==5.6.0", "apps": _exe_if_win(["pbr"])},
     "pelican": {
         "spec": "pelican==4.5.0",
         "apps": _exe_if_win(
@@ -578,6 +578,7 @@ PKG: Dict[str, Dict[str, Any]] = {
         "apps": _exe_if_win(["pycowsay"]),
         "apps_of_dependencies": [],
     },
+    "pygdbmi": {"spec": "pygdbmi==0.10.0.0", "apps": [], "apps_of_dependencies": []},
     "pylint": {
         "spec": "pylint==2.3.1",
         "apps": _exe_if_win(["epylint", "pylint", "pyreverse", "symilar"]),
@@ -774,7 +775,6 @@ PKG: Dict[str, Dict[str, Any]] = {
                 "pretranslate",
                 "prop2po",
                 "pydiff",
-                "pyjwt",  # PyJWT EXE
                 "pypo2phppo",
                 "rc2po",
                 "resx2po",

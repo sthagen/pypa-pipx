@@ -13,7 +13,7 @@ import textwrap
 import time
 import urllib.parse
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Callable, Dict, List
 
 import argcomplete  # type: ignore
 from packaging.utils import canonicalize_name
@@ -30,6 +30,8 @@ from pipx.venv import VenvContainer
 from pipx.version import __version__
 
 logger = logging.getLogger(__name__)
+
+VenvCompleter = Callable[[str], List[str]]
 
 
 def print_version() -> None:
@@ -115,7 +117,7 @@ class InstalledVenvsCompleter:
     def __init__(self, venv_container: VenvContainer) -> None:
         self.packages = [str(p.name) for p in sorted(venv_container.iter_venv_dirs())]
 
-    def use(self, prefix: str, **kwargs) -> List[str]:
+    def use(self, prefix: str, **kwargs: Any) -> List[str]:
         return [
             f"{prefix}{x[len(prefix):]}"
             for x in self.packages
@@ -123,7 +125,7 @@ class InstalledVenvsCompleter:
         ]
 
 
-def get_pip_args(parsed_args: Dict) -> List[str]:
+def get_pip_args(parsed_args: Dict[str, str]) -> List[str]:
     pip_args: List[str] = []
     if parsed_args.get("index_url"):
         pip_args += ["--index-url", parsed_args["index_url"]]
@@ -138,7 +140,7 @@ def get_pip_args(parsed_args: Dict) -> List[str]:
     return pip_args
 
 
-def get_venv_args(parsed_args: Dict) -> List[str]:
+def get_venv_args(parsed_args: Dict[str, str]) -> List[str]:
     venv_args: List[str] = []
     if parsed_args.get("system_site_packages"):
         venv_args += ["--system-site-packages"]
@@ -229,7 +231,7 @@ def run_pipx_command(args: argparse.Namespace) -> ExitCode:  # noqa: C901
             force=args.force,
         )
     elif args.command == "list":
-        return commands.list_packages(venv_container, args.include_injected)
+        return commands.list_packages(venv_container, args.include_injected, args.json)
     elif args.command == "uninstall":
         return commands.uninstall(venv_dir, constants.LOCAL_BIN_DIR, verbose)
     elif args.command == "uninstall-all":
@@ -291,7 +293,7 @@ def add_include_dependencies(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _add_install(subparsers) -> None:
+def _add_install(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser(
         "install",
         help="Install a package",
@@ -320,13 +322,13 @@ def _add_install(subparsers) -> None:
         default=DEFAULT_PYTHON,
         help=(
             "The Python executable used to create the Virtual Environment and run the "
-            "associated app/apps. Must be v3.5+."
+            "associated app/apps. Must be v3.6+."
         ),
     )
     add_pip_venv_args(p)
 
 
-def _add_inject(subparsers, venv_completer) -> None:
+def _add_inject(subparsers, venv_completer: VenvCompleter) -> None:
     p = subparsers.add_parser(
         "inject",
         help="Install packages into an existing Virtual Environment",
@@ -357,7 +359,7 @@ def _add_inject(subparsers, venv_completer) -> None:
     p.add_argument("--verbose", action="store_true")
 
 
-def _add_upgrade(subparsers, venv_completer) -> None:
+def _add_upgrade(subparsers, venv_completer: VenvCompleter) -> None:
     p = subparsers.add_parser(
         "upgrade",
         help="Upgrade a package",
@@ -379,7 +381,7 @@ def _add_upgrade(subparsers, venv_completer) -> None:
     p.add_argument("--verbose", action="store_true")
 
 
-def _add_upgrade_all(subparsers) -> None:
+def _add_upgrade_all(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser(
         "upgrade-all",
         help="Upgrade all packages. Runs `pip install -U <pkgname>` for each package.",
@@ -400,7 +402,7 @@ def _add_upgrade_all(subparsers) -> None:
     p.add_argument("--verbose", action="store_true")
 
 
-def _add_uninstall(subparsers, venv_completer) -> None:
+def _add_uninstall(subparsers, venv_completer: VenvCompleter) -> None:
     p = subparsers.add_parser(
         "uninstall",
         help="Uninstall a package",
@@ -410,7 +412,7 @@ def _add_uninstall(subparsers, venv_completer) -> None:
     p.add_argument("--verbose", action="store_true")
 
 
-def _add_uninstall_all(subparsers) -> None:
+def _add_uninstall_all(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser(
         "uninstall-all",
         help="Uninstall all packages",
@@ -419,7 +421,7 @@ def _add_uninstall_all(subparsers) -> None:
     p.add_argument("--verbose", action="store_true")
 
 
-def _add_reinstall(subparsers, venv_completer) -> None:
+def _add_reinstall(subparsers, venv_completer: VenvCompleter) -> None:
     p = subparsers.add_parser(
         "reinstall",
         formatter_class=LineWrapRawTextHelpFormatter,
@@ -440,13 +442,13 @@ def _add_reinstall(subparsers, venv_completer) -> None:
         default=DEFAULT_PYTHON,
         help=(
             "The Python executable used to recreate the Virtual Environment "
-            "and run the associated app/apps. Must be v3.5+."
+            "and run the associated app/apps. Must be v3.6+."
         ),
     )
     p.add_argument("--verbose", action="store_true")
 
 
-def _add_reinstall_all(subparsers) -> None:
+def _add_reinstall_all(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser(
         "reinstall-all",
         formatter_class=LineWrapRawTextHelpFormatter,
@@ -468,14 +470,14 @@ def _add_reinstall_all(subparsers) -> None:
         default=DEFAULT_PYTHON,
         help=(
             "The Python executable used to recreate the Virtual Environment "
-            "and run the associated app/apps. Must be v3.5+."
+            "and run the associated app/apps. Must be v3.6+."
         ),
     )
     p.add_argument("--skip", nargs="+", default=[], help="skip these packages")
     p.add_argument("--verbose", action="store_true")
 
 
-def _add_list(subparsers) -> None:
+def _add_list(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser(
         "list",
         help="List installed packages",
@@ -486,10 +488,13 @@ def _add_list(subparsers) -> None:
         action="store_true",
         help="Show packages injected into the main app's environment",
     )
+    p.add_argument(
+        "--json", action="store_true", help="Output rich data in json format."
+    )
     p.add_argument("--verbose", action="store_true")
 
 
-def _add_run(subparsers) -> None:
+def _add_run(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser(
         "run",
         formatter_class=LineWrapRawTextHelpFormatter,
@@ -535,7 +540,7 @@ def _add_run(subparsers) -> None:
     p.add_argument(
         "--python",
         default=DEFAULT_PYTHON,
-        help="The Python version to run package's CLI app with. Must be v3.5+.",
+        help="The Python version to run package's CLI app with. Must be v3.6+.",
     )
     add_pip_venv_args(p)
     p.set_defaults(subparser=p)
@@ -546,7 +551,7 @@ def _add_run(subparsers) -> None:
     p.usage = re.sub(r"\.\.\.", "app ...", p.usage)
 
 
-def _add_runpip(subparsers, venv_completer) -> None:
+def _add_runpip(subparsers, venv_completer: VenvCompleter) -> None:
     p = subparsers.add_parser(
         "runpip",
         help="Run pip in an existing pipx-managed Virtual Environment",
@@ -565,7 +570,7 @@ def _add_runpip(subparsers, venv_completer) -> None:
     p.add_argument("--verbose", action="store_true")
 
 
-def _add_ensurepath(subparsers) -> None:
+def _add_ensurepath(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser(
         "ensurepath",
         help=(
@@ -690,6 +695,7 @@ def setup_logging(verbose: bool) -> None:
                 "class": "logging.FileHandler",
                 "formatter": "file",
                 "filename": str(pipx.constants.pipx_log_file),
+                "encoding": "utf-8",
                 "level": "DEBUG",
             },
         },
@@ -723,7 +729,7 @@ def setup(args: argparse.Namespace) -> None:
                 {hazard}  A virtual environment for pipx was detected at
                 {str(old_pipx_venv_location)}. The 'pipx-app' package has been
                 renamed back to 'pipx'
-                (https://github.com/pipxproject/pipx/issues/82).
+                (https://github.com/pypa/pipx/issues/82).
                 """,
                 subsequent_indent=" " * 4,
             )
@@ -767,6 +773,7 @@ def cli() -> ExitCode:
         logger.debug("Uncaught Exception:", exc_info=True)
         raise
     finally:
+        logger.debug("pipx finished.")
         show_cursor()
 
 

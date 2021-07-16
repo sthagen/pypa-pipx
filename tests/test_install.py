@@ -6,11 +6,10 @@ from unittest import mock
 
 import pytest  # type: ignore
 
-from helpers import app_name, run_pipx_cli, unwrap_log_text, which_python
+from helpers import app_name, run_pipx_cli, unwrap_log_text
 from package_info import PKG
 from pipx import constants
 
-PYTHON3_5 = which_python("python3.5")
 TEST_DATA_PATH = "./testdata/test_package_specifier"
 
 
@@ -33,7 +32,7 @@ def install_package(capsys, pipx_temp_env, caplog, package, package_name=""):
     assert f"installed package {package_name}" in captured.out
     if not sys.platform.startswith("win"):
         # TODO assert on windows too
-        # https://github.com/pipxproject/pipx/issues/217
+        # https://github.com/pypa/pipx/issues/217
         assert "symlink missing or pointing to unexpected location" not in captured.out
     assert "not modifying" not in captured.out
     assert "is not on your PATH environment variable" not in captured.out
@@ -103,7 +102,7 @@ def test_force_install(pipx_temp_env, capsys):
 
 
 def test_install_no_packages_found(pipx_temp_env, capsys):
-    run_pipx_cli(["install", "pygdbmi"])
+    run_pipx_cli(["install", PKG["pygdbmi"]["spec"]])
     captured = capsys.readouterr()
     assert "No apps associated with package pygdbmi" in captured.err
 
@@ -191,13 +190,6 @@ def test_existing_symlink_points_to_nothing(pipx_temp_env, capsys):
     assert "symlink missing or pointing to unexpected location" not in captured.out
 
 
-def test_install_python3_5(pipx_temp_env):
-    if PYTHON3_5:
-        assert not run_pipx_cli(["install", "cowsay", "--python", PYTHON3_5])
-    else:
-        pytest.skip("python3.5 not on PATH")
-
-
 def test_pip_args_forwarded_to_package_name_determination(pipx_temp_env, capsys):
     assert run_pipx_cli(
         [
@@ -216,15 +208,15 @@ def test_install_suffix(pipx_temp_env, capsys):
     name = "pbr"
 
     suffix = "_a"
-    assert not run_pipx_cli(["install", "pbr", f"--suffix={suffix}"])
+    assert not run_pipx_cli(["install", PKG[name]["spec"], f"--suffix={suffix}"])
     captured = capsys.readouterr()
-    name_a = f"{name}{suffix}{'.exe' if constants.WINDOWS else ''}"
+    name_a = app_name(f"{name}{suffix}")
     assert f"- {name_a}" in captured.out
 
     suffix = "_b"
-    assert not run_pipx_cli(["install", "pbr", f"--suffix={suffix}"])
+    assert not run_pipx_cli(["install", PKG[name]["spec"], f"--suffix={suffix}"])
     captured = capsys.readouterr()
-    name_b = f"{name}{suffix}{'.exe' if constants.WINDOWS else ''}"
+    name_b = app_name(f"{name}{suffix}")
     assert f"- {name_b}" in captured.out
 
     assert (constants.LOCAL_BIN_DIR / name_a).exists()

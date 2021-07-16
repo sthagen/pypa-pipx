@@ -1,5 +1,30 @@
 dev
 
+- Fix to `pipx ensurepath` to fix behavior in user locales other than UTF-8, to fix #644. The internal change is to use userpath v1.6.0 or greater. (#700)
+- Fix virtual environment inspection for Python releases that uses an int for its release serial number. (#706)
+
+0.16.3
+
+- Organization: pipx is extremely pleased to now be a project of the Python Packaging Authority (PyPA)!  Note that our github URL has changed to [pypa/pipx](https://github.com/pypa/pipx)
+- Fixed `pipx list --json` to return valid json with no venvs installed.  Previously would return and empty string to stdout. (#681)
+- Changed `pipx ensurepath` bash behavior so that only one of {`~/.profile`, `~/.bash\_profile`} is modified with the extra pipx paths, not both.  Previously, if a `.bash_profile` file was created where one didn't exist, it could cause problems, e.g. #456. The internal change is to use userpath v1.5.0 or greater. (#684)
+- Changed default nox tests, Github Workflow tests, and pytest behavior to use local pypi server with fixed lists of available packages.  This allows greater test isolation (no network pypi access needed) and determinism (fixed available dependencies.)  It also allows running the tests offline with some extra preparation beforehand (See [Running Unit Tests Offline](https://pypa.github.io/pipx/contributing/#running-unit-tests-offline)). The old style tests that use the internet to access pypi.org are still available using `nox -s tests_internet` or `pytest --net-pypiserver tests`. (#686)
+* Colorama is now only installed on Windows. (#691)
+
+0.16.2.1
+
+- Changed non-venv-info warnings and notices from `pipx list` to print to stderr.  This especially prevents `pipx list --json` from printing invalid json to stdout. (#680)
+- Fixed bug that could cause uninstall on Windows with injected packages to uninstall too many apps from the local binary directory. (#679)
+
+0.16.2.0
+
+- Fixed bug #670 where uninstalling a venv could erroneously uninstall other apps from the local binary directory. (#672)
+- Added `--json` switch to `pipx list` to output rich json-metadata for all venvs.
+- Ensured log files are utf-8 encoded to preven Unicode encoding errors from occurring with emojis. (#646)
+- Fixed issue which made pipx incorrectly list apps as part of a venv when they were not installed by pipx. (#650)
+- Fixed old regression that would prevent pipx uninstall from cleaning up linked binaries if the venv was old and did not have pipx metadata. (#651)
+- Fixed bugs with suffixed-venvs on Windows.  Now properly summarizes install, and actually uninstalls associated binaries for suffixed-venvs. (#653)
+- Changed venv minimum python version to 3.6, removing python 3.5 which is End of Life. (#666)
 
 0.16.1.0
 

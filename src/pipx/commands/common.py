@@ -52,7 +52,7 @@ class VenvProblems:
 def expose_apps_globally(
     local_bin_dir: Path, app_paths: List[Path], *, force: bool, suffix: str = ""
 ) -> None:
-    if not _can_symlink(local_bin_dir):
+    if not can_symlink(local_bin_dir):
         _copy_package_apps(local_bin_dir, app_paths, suffix=suffix)
     else:
         _symlink_package_apps(local_bin_dir, app_paths, force=force, suffix=suffix)
@@ -61,7 +61,7 @@ def expose_apps_globally(
 _can_symlink_cache: Dict[Path, bool] = {}
 
 
-def _can_symlink(local_bin_dir: Path) -> bool:
+def can_symlink(local_bin_dir: Path) -> bool:
 
     if not WINDOWS:
         # Technically, even on Unix this depends on the filesystem
@@ -156,47 +156,67 @@ def _symlink_package_apps(
             )
 
 
-def get_package_summary(
+def venv_health_check(
+    venv: Venv, package_name: Optional[str] = None
+) -> Tuple[VenvProblems, str]:
+    venv_dir = venv.root
+    python_path = venv.python_path.resolve()
+
+    if package_name is None:
+        package_name = venv.main_package_name
+
+    if not python_path.is_file():
+        return (
+            VenvProblems(invalid_interpreter=True),
+            f"   package {red(bold(venv_dir.name))} has invalid "
+            f"interpreter {str(python_path)}\r{hazard}",
+        )
+    if not venv.package_metadata:
+        return (
+            VenvProblems(missing_metadata=True),
+            f"   package {red(bold(venv_dir.name))} has missing "
+            f"internal pipx metadata.\r{hazard}",
+        )
+    if venv_dir.name != canonicalize_name(venv_dir.name):
+        return (
+            VenvProblems(bad_venv_name=True),
+            f"   package {red(bold(venv_dir.name))} needs its "
+            f"internal data updated.\r{hazard}",
+        )
+    if venv.package_metadata[package_name].package_version == "":
+        return (
+            VenvProblems(not_installed=True),
+            f"   package {red(bold(package_name))} {red('is not installed')} "
+            f"in the venv {venv_dir.name}\r{hazard}",
+        )
+    return (VenvProblems(), "")
+
+
+def get_venv_summary(
     venv_dir: Path,
     *,
-    package: str = None,
+    package_name: Optional[str] = None,
     new_install: bool = False,
     include_injected: bool = False,
 ) -> Tuple[str, VenvProblems]:
     venv = Venv(venv_dir)
-    python_path = venv.python_path.resolve()
 
-    if package is None:
-        package = venv.main_package_name
+    if package_name is None:
+        package_name = venv.main_package_name
 
-    if not python_path.is_file():
-        return (
-            f"   package {red(bold(venv_dir.name))} has invalid interpreter {str(python_path)}",
-            VenvProblems(invalid_interpreter=True),
-        )
-    if not venv.package_metadata:
-        return (
-            f"   package {red(bold(venv_dir.name))} has missing internal pipx metadata.",
-            VenvProblems(missing_metadata=True),
-        )
-    if venv_dir.name != canonicalize_name(venv_dir.name):
-        return (
-            f"   package {red(bold(venv_dir.name))} needs its internal data updated.",
-            VenvProblems(bad_venv_name=True),
-        )
+    (venv_problems, warning_message) = venv_health_check(venv, package_name)
+    if venv_problems.any_():
+        return (warning_message, venv_problems)
 
-    package_metadata = venv.package_metadata[package]
+    package_metadata = venv.package_metadata[package_name]
+    apps = package_metadata.apps
+    if package_metadata.include_dependencies:
+        apps += package_metadata.apps_of_dependencies
 
-    if package_metadata.package_version is None:
-        return (
-            f"   package {red(bold(package))} {red('is not installed')} "
-            f"in the venv {venv_dir.name}",
-            VenvProblems(not_installed=True),
-        )
-
-    apps = package_metadata.apps + package_metadata.apps_of_dependencies
-    exposed_app_paths = _get_exposed_app_paths_for_package(
-        venv.bin_path, apps, constants.LOCAL_BIN_DIR
+    exposed_app_paths = get_exposed_app_paths_for_package(
+        venv.bin_path,
+        constants.LOCAL_BIN_DIR,
+        [add_suffix(app, package_metadata.suffix) for app in apps],
     )
     exposed_binary_names = sorted(p.name for p in exposed_app_paths)
     unavailable_binary_names = sorted(
@@ -214,20 +234,27 @@ def get_package_summary(
         _get_list_output(
             python_version,
             package_metadata.package_version,
-            package,
+            package_name,
             new_install,
             exposed_binary_names,
             unavailable_binary_names,
             venv.pipx_metadata.injected_packages if include_injected else None,
             suffix=package_metadata.suffix,
         ),
-        VenvProblems(),
+        venv_problems,
     )
 
 
-def _get_exposed_app_paths_for_package(
-    venv_bin_path: Path, package_binary_names: List[str], local_bin_dir: Path
+def get_exposed_app_paths_for_package(
+    venv_bin_path: Path,
+    local_bin_dir: Path,
+    package_binary_names: Optional[List[str]] = None,
 ) -> Set[Path]:
+    # package_binary_names is used only if local_bin_path cannot use symlinks.
+    # It is necessary for non-symlink systems to return valid app_paths.
+    if package_binary_names is None:
+        package_binary_names = []
+
     bin_symlinks = set()
     for b in local_bin_dir.iterdir():
         try:
@@ -236,9 +263,10 @@ def _get_exposed_app_paths_for_package(
             # is not a reliable way to determine if the symlink exists.
             # We always use the stricter check on non-Windows systems. On
             # Windows, we use a less strict check if we don't have a symlink.
-            if _can_symlink(local_bin_dir) and b.is_symlink():
+            is_same_file = False
+            if can_symlink(local_bin_dir) and b.is_symlink():
                 is_same_file = b.resolve().parent.samefile(venv_bin_path)
-            else:
+            elif not can_symlink(local_bin_dir):
                 is_same_file = b.name in package_binary_names
 
             if is_same_file:
@@ -252,7 +280,7 @@ def _get_exposed_app_paths_for_package(
 def _get_list_output(
     python_version: str,
     package_version: str,
-    package: str,
+    package_name: str,
     new_install: bool,
     exposed_binary_names: List[str],
     unavailable_binary_names: List[str],
@@ -260,9 +288,9 @@ def _get_list_output(
     suffix: str = "",
 ) -> str:
     output = []
-    suffix = f" ({bold(shlex.quote(package + suffix))})" if suffix else ""
+    suffix = f" ({bold(shlex.quote(package_name + suffix))})" if suffix else ""
     output.append(
-        f"  {'installed' if new_install else ''} package {bold(shlex.quote(package))}"
+        f"  {'installed' if new_install else ''} package {bold(shlex.quote(package_name))}"
         f" {bold(package_version)}{suffix}, {python_version}"
     )
 
@@ -312,16 +340,16 @@ def package_name_from_spec(
 
 def run_post_install_actions(
     venv: Venv,
-    package: str,
+    package_name: str,
     local_bin_dir: Path,
     venv_dir: Path,
     include_dependencies: bool,
     *,
     force: bool,
 ) -> None:
-    package_metadata = venv.package_metadata[package]
+    package_metadata = venv.package_metadata[package_name]
 
-    display_name = f"{package}{package_metadata.suffix}"
+    display_name = f"{package_name}{package_metadata.suffix}"
 
     if not package_metadata.apps:
         if not package_metadata.apps_of_dependencies:
@@ -369,8 +397,8 @@ def run_post_install_actions(
                 local_bin_dir, app_paths, force=force, suffix=package_metadata.suffix
             )
 
-    package_summary, _ = get_package_summary(
-        venv_dir, package=package, new_install=True
+    package_summary, _ = get_venv_summary(
+        venv_dir, package_name=package_name, new_install=True
     )
     print(package_summary)
     warn_if_not_on_path(local_bin_dir)

@@ -161,7 +161,7 @@ def _windows_extra_app_paths(app_paths: List[Path]) -> List[Path]:
     return app_paths_output
 
 
-def fetch_info_in_venv(venv_python_path) -> Tuple[List[str], Dict[str, str], str]:
+def fetch_info_in_venv(venv_python_path: Path) -> Tuple[List[str], Dict[str, str], str]:
     command_str = textwrap.dedent(
         """
         import json
@@ -172,7 +172,11 @@ def fetch_info_in_venv(venv_python_path) -> Tuple[List[str], Dict[str, str], str
         impl_ver = sys.implementation.version
         implementation_version = "{0.major}.{0.minor}.{0.micro}".format(impl_ver)
         if impl_ver.releaselevel != "final":
-            implementation_version += impl_ver.releaselevel[0] + impl_ver.serial
+            implementation_version = "{}{}{}".format(
+                implementation_version,
+                impl_ver.releaselevel[0],
+                impl_ver.serial,
+            )
 
         sys_path = sys.path
         try:
