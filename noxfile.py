@@ -4,17 +4,18 @@ from pathlib import Path
 
 import nox  # type: ignore
 
-PYTHON_ALL_VERSIONS = ["3.6", "3.7", "3.8", "3.9"]
-PYTHON_DEFAULT_VERSION = "3.9"
+PYTHON_ALL_VERSIONS = ["3.6", "3.7", "3.8", "3.9", "3.10"]
+PYTHON_DEFAULT_VERSION = "3.10"
 DOC_DEPENDENCIES = [".", "jinja2", "mkdocs", "mkdocs-material"]
 LINT_DEPENDENCIES = [
-    "black==21.5b1",
-    "flake8==3.9.2",
-    "flake8-bugbear==21.3.2",
-    "mypy==0.812",
-    "check-manifest==0.46",
+    "black==21.12b0",
+    "flake8==4.0.1",
+    "flake8-bugbear==21.11.29",
+    "mypy==0.930",
+    "types-jinja2",
+    "check-manifest==0.47",
     "packaging>=20.0",
-    "isort==5.8.0",
+    "isort==5.10.1",
 ]
 # Packages whose dependencies need an intact system PATH to compile
 # pytest setup clears PATH.  So pre-build some wheels to the pip cache.
@@ -79,12 +80,12 @@ def get_branch():
     )
 
 
-def on_master_no_changes(session):
+def on_main_no_changes(session):
     if has_changes():
         session.error("All changes must be committed or removed before publishing")
     branch = get_branch()
-    if branch != "master":
-        session.error(f"Must be on 'master' branch. Currently on {branch!r} branch")
+    if branch != "main":
+        session.error(f"Must be on 'main' branch. Currently on {branch!r} branch")
 
 
 @nox.session(python=PYTHON_ALL_VERSIONS)
@@ -192,7 +193,7 @@ def build(session):
 
 @nox.session(python=PYTHON_DEFAULT_VERSION)
 def publish(session):
-    on_master_no_changes(session)
+    on_main_no_changes(session)
     session.run("python", "-m", "pip", "install", "--upgrade", "pip")
     session.install("twine")
     build(session)
@@ -227,7 +228,7 @@ def watch_docs(session):
 
 @nox.session(python=PYTHON_DEFAULT_VERSION)
 def pre_release(session):
-    on_master_no_changes(session)
+    on_main_no_changes(session)
     session.run("python", "-m", "pip", "install", "--upgrade", "pip")
     session.install("mypy")
     if session.posargs:
@@ -245,7 +246,7 @@ def pre_release(session):
 
 @nox.session(python=PYTHON_DEFAULT_VERSION)
 def post_release(session):
-    on_master_no_changes(session)
+    on_main_no_changes(session)
     session.run("python", "-m", "pip", "install", "--upgrade", "pip")
     session.install("mypy")
     session.run("python", "scripts/pipx_postrelease.py")
