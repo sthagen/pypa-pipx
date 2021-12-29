@@ -1,6 +1,10 @@
 dev
 
 
+0.17.0
+
+- Support `pipx run` with version constraints and extras. (#697)
+
 0.16.5
 
 - Fixed `pipx list` output phrasing to convey that python version displayed is the one with which package was installed. 
