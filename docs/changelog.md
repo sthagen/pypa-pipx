@@ -1,6 +1,14 @@
 dev
 
 
+1.0.0
+
+- Support [argcomplete 2.0.0](https://pypi.org/project/argcomplete/2.0.0) (#790)
+- Include machinery to build a manpage for pipx with [argparse-manpage](https://pypi.org/project/argparse-manpage/).
+- Add better handling for 'app not found' when a single app is present in the project, and an improved error message (#733)
+- Fixed animations sending output to stdout, which can break JSON output. (#769)
+- Fix typo in `pipx upgrade-all` output
+
 0.17.0
 
 - Support `pipx run` with version constraints and extras. (#697)
@@ -9,6 +17,7 @@ dev
 
 - Fixed `pipx list` output phrasing to convey that python version displayed is the one with which package was installed. 
 - Fixed `pipx install` to provide return code 0 if venv already exists, similar to pip’s behavior. (#736)
+- [docs] Update ansible's install command in [Programs to Try document](https://pypa.github.io/pipx/programs-to-try/#ansible) to work with Ansible 2.10+ (#742)
 
 0.16.4
 
