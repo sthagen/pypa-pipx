@@ -23,7 +23,7 @@ import pipx.constants
 from pipx import commands, constants
 from pipx.animate import hide_cursor, show_cursor
 from pipx.colors import bold, green
-from pipx.constants import ExitCode
+from pipx.constants import WINDOWS, ExitCode
 from pipx.emojis import hazard
 from pipx.interpreter import DEFAULT_PYTHON
 from pipx.util import PipxError, mkdir, pipx_wrap, rmdir
@@ -64,8 +64,8 @@ PIPX_DESCRIPTION += pipx_wrap(
     optional environment variables:
       PIPX_HOME             Overrides default pipx location. Virtual Environments will be installed to $PIPX_HOME/venvs.
       PIPX_BIN_DIR          Overrides location of app installations. Apps are symlinked or copied here.
-      USE_EMOJI             Overrides emoji behavior. Default value varies based on platform.
       PIPX_DEFAULT_PYTHON   Overrides default python used for commands.
+      USE_EMOJI             Overrides emoji behavior. Default value varies based on platform.
     """,
     subsequent_indent=" " * 24,  # match the indent of argparse options
     keep_newlines=True,
@@ -132,7 +132,7 @@ def get_pip_args(parsed_args: Dict[str, str]) -> List[str]:
         pip_args += ["--index-url", parsed_args["index_url"]]
 
     if parsed_args.get("pip_args"):
-        pip_args += shlex.split(parsed_args.get("pip_args", ""))
+        pip_args += shlex.split(parsed_args.get("pip_args", ""), posix=not WINDOWS)
 
     # make sure --editable is last because it needs to be right before
     #   package specification
@@ -240,7 +240,9 @@ def run_pipx_command(args: argparse.Namespace) -> ExitCode:  # noqa: C901
             force=args.force,
         )
     elif args.command == "list":
-        return commands.list_packages(venv_container, args.include_injected, args.json)
+        return commands.list_packages(
+            venv_container, args.include_injected, args.json, args.short
+        )
     elif args.command == "uninstall":
         return commands.uninstall(venv_dir, constants.LOCAL_BIN_DIR, verbose)
     elif args.command == "uninstall-all":
@@ -273,6 +275,8 @@ def run_pipx_command(args: argparse.Namespace) -> ExitCode:  # noqa: C901
     elif args.command == "completions":
         print(constants.completion_instructions)
         return ExitCode(0)
+    elif args.command == "environment":
+        return commands.environment(value=args.value)
     else:
         raise PipxError(f"Unknown command {args.command}")
 
@@ -497,9 +501,11 @@ def _add_list(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Show packages injected into the main app's environment",
     )
-    p.add_argument(
+    g = p.add_mutually_exclusive_group()
+    g.add_argument(
         "--json", action="store_true", help="Output rich data in json format."
     )
+    g.add_argument("--short", action="store_true", help="List packages only.")
     p.add_argument("--verbose", action="store_true")
 
 
@@ -605,6 +611,27 @@ def _add_ensurepath(subparsers: argparse._SubParsersAction) -> None:
     )
 
 
+def _add_environment(subparsers: argparse._SubParsersAction) -> None:
+    p = subparsers.add_parser(
+        "environment",
+        formatter_class=LineWrapRawTextHelpFormatter,
+        help=("Print a list of variables used in pipx.constants."),
+        description=textwrap.dedent(
+            """
+            Available variables:
+            PIPX_HOME, PIPX_BIN_DIR, PIPX_SHARED_LIBS, PIPX_LOCAL_VENVS, PIPX_LOG_DIR,
+            PIPX_TRASH_DIR, PIPX_VENV_CACHEDIR
+
+            Only PIPX_HOME and PIPX_BIN_DIR can be set by users in the above list.
+
+            """
+        ),
+    )
+    p.add_argument(
+        "--value", "-v", metavar="VARIABLE", help="Print the value of the variable."
+    )
+
+
 def get_command_parser() -> argparse.ArgumentParser:
     venv_container = VenvContainer(constants.PIPX_LOCAL_VENVS)
 
@@ -633,6 +660,7 @@ def get_command_parser() -> argparse.ArgumentParser:
     _add_run(subparsers)
     _add_runpip(subparsers, completer_venvs.use)
     _add_ensurepath(subparsers)
+    _add_environment(subparsers)
 
     parser.add_argument("--version", action="store_true", help="Print version and exit")
     subparsers.add_parser(
@@ -732,6 +760,18 @@ def setup(args: argparse.Namespace) -> None:
     mkdir(constants.PIPX_LOCAL_VENVS)
     mkdir(constants.LOCAL_BIN_DIR)
     mkdir(constants.PIPX_VENV_CACHEDIR)
+
+    cachedir_tag = constants.PIPX_VENV_CACHEDIR / "CACHEDIR.TAG"
+    if not cachedir_tag.exists():
+        logger.debug("Adding CACHEDIR.TAG to cache directory")
+        signature = (
+            "Signature: 8a477f597d28d172789f06886806bc55\n"
+            "# This file is a cache directory tag created by pipx.\n"
+            "# For information about cache directory tags, see:\n"
+            "#       https://bford.info/cachedir/\n"
+        )
+        with open(cachedir_tag, "w") as file:
+            file.write(signature)
 
     rmdir(constants.PIPX_TRASH_DIR, False)
 
