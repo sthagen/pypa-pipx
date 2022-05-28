@@ -1,4 +1,4 @@
-## dev
+## 1.1.0
 
 - Fix encoding issue on Windows when pip fails to install a package
 - Improve the behaviour of `shlex.split` on Windows, so paths on Windows can be handled peoperly when they are passed in `--pip-args`. (#794)
