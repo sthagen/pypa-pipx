@@ -89,7 +89,7 @@ class Venv:
     ) -> None:
         self.root = path
         self.python = python
-        self.bin_path, self.python_path = get_venv_paths(self.root)
+        self.bin_path, self.python_path, self.man_path = get_venv_paths(self.root)
         self.pipx_metadata = PipxMetadata(venv_dir=path)
         self.verbose = verbose
         self.do_animation = not verbose
@@ -156,24 +156,32 @@ class Venv:
         else:
             return self.pipx_metadata.main_package.package
 
-    def create_venv(self, venv_args: List[str], pip_args: List[str]) -> None:
+    def create_venv(
+        self, venv_args: List[str], pip_args: List[str], override_shared: bool = False
+    ) -> None:
+        """
+        override_shared -- Override installing shared libraries to the pipx shared directory (default False)
+        """
         with animate("creating virtual environment", self.do_animation):
-            cmd = [self.python, "-m", "venv", "--without-pip"]
+            cmd = [self.python, "-m", "venv"]
+            if not override_shared:
+                cmd.append("--without-pip")
             venv_process = run_subprocess(cmd + venv_args + [str(self.root)])
         subprocess_post_check(venv_process)
 
         shared_libs.create(self.verbose)
-        pipx_pth = get_site_packages(self.python_path) / PIPX_SHARED_PTH
-        # write path pointing to the shared libs site-packages directory
-        # example pipx_pth location:
-        #   ~/.local/pipx/venvs/black/lib/python3.8/site-packages/pipx_shared.pth
-        # example shared_libs.site_packages location:
-        #   ~/.local/pipx/shared/lib/python3.6/site-packages
-        #
-        # https://docs.python.org/3/library/site.html
-        # A path configuration file is a file whose name has the form 'name.pth'.
-        # its contents are additional items (one per line) to be added to sys.path
-        pipx_pth.write_text(f"{shared_libs.site_packages}\n", encoding="utf-8")
+        if not override_shared:
+            pipx_pth = get_site_packages(self.python_path) / PIPX_SHARED_PTH
+            # write path pointing to the shared libs site-packages directory
+            # example pipx_pth location:
+            #   ~/.local/share/pipx/venvs/black/lib/python3.8/site-packages/pipx_shared.pth
+            # example shared_libs.site_packages location:
+            #   ~/.local/share/pipx/shared/lib/python3.6/site-packages
+            #
+            # https://docs.python.org/3/library/site.html
+            # A path configuration file is a file whose name has the form 'name.pth'.
+            # its contents are additional items (one per line) to be added to sys.path
+            pipx_pth.write_text(f"{shared_libs.site_packages}\n", encoding="utf-8")
 
         self.pipx_metadata.venv_args = venv_args
         self.pipx_metadata.python_version = self.get_python_version()
@@ -347,7 +355,7 @@ class Venv:
     ) -> VenvMetadata:
         data_start = time.time()
         venv_metadata = inspect_venv(
-            package_name, package_extras, self.bin_path, self.python_path
+            package_name, package_extras, self.bin_path, self.python_path, self.man_path
         )
         logger.info(
             f"get_venv_metadata_for_package: {1e3*(time.time()-data_start):.0f}ms"
@@ -377,6 +385,10 @@ class Venv:
             app_paths=venv_package_metadata.app_paths,
             apps_of_dependencies=venv_package_metadata.apps_of_dependencies,
             app_paths_of_dependencies=venv_package_metadata.app_paths_of_dependencies,
+            man_pages=venv_package_metadata.man_pages,
+            man_paths=venv_package_metadata.man_paths,
+            man_pages_of_dependencies=venv_package_metadata.man_pages_of_dependencies,
+            man_paths_of_dependencies=venv_package_metadata.man_paths_of_dependencies,
             package_version=venv_package_metadata.package_version,
             suffix=suffix,
         )

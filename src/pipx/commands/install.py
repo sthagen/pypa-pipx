@@ -14,6 +14,7 @@ def install(
     package_name: Optional[str],
     package_spec: str,
     local_bin_dir: Path,
+    local_man_dir: Path,
     python: Optional[str],
     pip_args: List[str],
     venv_args: List[str],
@@ -73,7 +74,9 @@ def install(
             return EXIT_CODE_INSTALL_VENV_EXISTS
 
     try:
-        venv.create_venv(venv_args, pip_args)
+        # Enable installing shared library `pip` with `pipx`
+        override_shared = package_name == "pip"
+        venv.create_venv(venv_args, pip_args, override_shared)
         for dep in preinstall_packages or []:
             dep_name = package_name_from_spec(
                 dep, python, pip_args=pip_args, verbose=verbose
@@ -92,6 +95,7 @@ def install(
             venv,
             package_name,
             local_bin_dir,
+            local_man_dir,
             venv_dir,
             include_dependencies,
             force=force,

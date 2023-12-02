@@ -1,5 +1,9 @@
 ## dev
 
+- Check whether pip module exists in shared lib before performing any actions, such as `reinstall-all`.
+- Drop `setuptools` and `wheel` from the shared libraries. This results in less time consumption when the libraries are
+automatically upgraded.
+- Allow running `pip` with `pipx run`
 - Support PEP 723 run requirements in `pipx run`.
 - Imply `--include-apps` when running `pipx inject --include-deps`
 - Add `--with-suffix` for `pipx inject` command
@@ -22,6 +26,7 @@
 - Fix program name in generated manual page
 - Print all environment variables in `pipx environment`
 - Return an error message when directory can't be added to PATH successfully
+- Expose manual pages included in an application installed with `pipx install`
 
 ## 1.2.1
 

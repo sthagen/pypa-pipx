@@ -24,10 +24,10 @@ SHARED_LIBS_MAX_AGE_SEC = datetime.timedelta(days=30).total_seconds()
 class _SharedLibs:
     def __init__(self) -> None:
         self.root = constants.PIPX_SHARED_LIBS
-        self.bin_path, self.python_path = get_venv_paths(self.root)
+        self.bin_path, self.python_path, self.man_path = get_venv_paths(self.root)
         self.pip_path = self.bin_path / ("pip" if not WINDOWS else "pip.exe")
-        # i.e. bin_path is ~/.local/pipx/shared/bin
-        # i.e. python_path is ~/.local/pipx/shared/python
+        # i.e. bin_path is ~/.local/share/pipx/shared/bin
+        # i.e. python_path is ~/.local/share/pipx/shared/python
         self._site_packages: Optional[Path] = None
         self.has_been_updated_this_run = False
         self.has_been_logged_this_run = False
@@ -53,7 +53,17 @@ class _SharedLibs:
 
     @property
     def is_valid(self) -> bool:
-        return self.python_path.is_file() and self.pip_path.is_file()
+        if self.python_path.is_file():
+            check_pip = "import importlib.util; print(importlib.util.find_spec('pip'))"
+            out = run_subprocess(
+                [self.python_path, "-c", check_pip],
+                capture_stderr=False,
+                log_cmd_str="<checking pip's availability>",
+            ).stdout.strip()
+
+            return self.pip_path.is_file() and out != "None"
+        else:
+            return False
 
     @property
     def needs_upgrade(self) -> bool:
@@ -106,9 +116,7 @@ class _SharedLibs:
                         "install",
                         *_pip_args,
                         "--upgrade",
-                        "pip",
-                        "setuptools",
-                        "wheel",
+                        "pip >= 23.1",
                     ]
                 )
             subprocess_post_check(upgrade_process)
