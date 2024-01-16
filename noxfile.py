@@ -133,7 +133,9 @@ def build_docs(session: nox.Session) -> None:
     session.run("mkdocs", "build", "--strict", "--site-dir", *site_dir)
     upcoming_changelog.unlink(missing_ok=True)
     for site in site_dir:
-        shutil.rmtree(Path(site, "_draft_changelog"))
+        draft_changelog_dir = Path(site, "_draft_changelog")
+        if draft_changelog_dir.exists():
+            shutil.rmtree(draft_changelog_dir)
 
 
 @nox.session(python=PYTHON_DEFAULT_VERSION)
@@ -142,6 +144,12 @@ def watch_docs(session: nox.Session) -> None:
     upcoming_changelog = create_upcoming_changelog(session)
     session.run("mkdocs", "serve", "--strict")
     upcoming_changelog.unlink(missing_ok=True)
+
+
+@nox.session(python=PYTHON_DEFAULT_VERSION)
+def build_changelog(session: nox.Session) -> None:
+    session.install(*DOC_DEPENDENCIES, ".")
+    session.run("towncrier", "build", "--version", session.posargs[0], "--yes")
 
 
 @nox.session(python=PYTHON_DEFAULT_VERSION)
