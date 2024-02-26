@@ -13,7 +13,7 @@ import textwrap
 import time
 import urllib.parse
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import argcomplete
 import platformdirs
@@ -24,6 +24,7 @@ from pipx import commands, constants
 from pipx.animate import hide_cursor, show_cursor
 from pipx.colors import bold, green
 from pipx.constants import (
+    EXIT_CODE_OK,
     EXIT_CODE_SPECIFIED_PYTHON_EXECUTABLE_NOT_FOUND,
     MINIMUM_PYTHON_VERSION,
     WINDOWS,
@@ -174,7 +175,7 @@ def get_venv_args(parsed_args: Dict[str, str]) -> List[str]:
     return venv_args
 
 
-def run_pipx_command(args: argparse.Namespace) -> ExitCode:  # noqa: C901
+def run_pipx_command(args: argparse.Namespace, subparsers: Dict[str, argparse.ArgumentParser]) -> ExitCode:  # noqa: C901
     verbose = args.verbose if "verbose" in args else False
     pip_args = get_pip_args(vars(args))
     venv_args = get_venv_args(vars(args))
@@ -267,10 +268,12 @@ def run_pipx_command(args: argparse.Namespace) -> ExitCode:  # noqa: C901
     elif args.command == "upgrade":
         return commands.upgrade(
             venv_dir,
+            args.python,
             pip_args,
             verbose,
             include_injected=args.include_injected,
             force=args.force,
+            install=args.install,
         )
     elif args.command == "upgrade-all":
         return commands.upgrade_all(
@@ -288,6 +291,16 @@ def run_pipx_command(args: argparse.Namespace) -> ExitCode:  # noqa: C901
             args.short,
             args.skip_maintenance,
         )
+    elif args.command == "interpreter":
+        if args.interpreter_command == "list":
+            return commands.list_interpreters(venv_container)
+        elif args.interpreter_command == "prune":
+            return commands.prune_interpreters(venv_container)
+        elif args.interpreter_command is None:
+            subparsers["interpreter"].print_help()
+            return EXIT_CODE_OK
+        else:
+            raise PipxError(f"Unknown interpreter command {args.interpreter_command}")
     elif args.command == "uninstall":
         return commands.uninstall(venv_dir, constants.LOCAL_BIN_DIR, constants.LOCAL_MAN_DIR, verbose)
     elif args.command == "uninstall-all":
@@ -486,6 +499,12 @@ def _add_upgrade(subparsers, venv_completer: VenvCompleter, shared_parser: argpa
         help="Modify existing virtual environment and files in PIPX_BIN_DIR and PIPX_MAN_DIR",
     )
     add_pip_venv_args(p)
+    p.add_argument(
+        "--install",
+        action="store_true",
+        help="Install package spec if missing",
+    )
+    add_python_options(p)
 
 
 def _add_upgrade_all(subparsers: argparse._SubParsersAction, shared_parser: argparse.ArgumentParser) -> None:
@@ -586,6 +605,25 @@ def _add_list(subparsers: argparse._SubParsersAction, shared_parser: argparse.Ar
     g.add_argument("--json", action="store_true", help="Output rich data in json format.")
     g.add_argument("--short", action="store_true", help="List packages only.")
     g.add_argument("--skip-maintenance", action="store_true", help="Skip maintenance tasks.")
+
+
+def _add_interpreter(
+    subparsers: argparse._SubParsersAction, shared_parser: argparse.ArgumentParser
+) -> argparse.ArgumentParser:
+    p: argparse.ArgumentParser = subparsers.add_parser(
+        "interpreter",
+        help="Interact with interpreters managed by pipx",
+        description="Interact with interpreters managed by pipx",
+        parents=[shared_parser],
+    )
+    s = p.add_subparsers(
+        title="subcommands",
+        description="Get help for commands with pipx interpreter COMMAND --help",
+        dest="interpreter_command",
+    )
+    s.add_parser("list", help="List available interpreters", description="List available interpreters")
+    s.add_parser("prune", help="Prune unused interpreters", description="Prune unused interpreters")
+    return p
 
 
 def _add_run(subparsers: argparse._SubParsersAction, shared_parser: argparse.ArgumentParser) -> None:
@@ -706,7 +744,7 @@ def _add_environment(subparsers: argparse._SubParsersAction, shared_parser: argp
     p.add_argument("--value", "-V", metavar="VARIABLE", help="Print the value of the variable.")
 
 
-def get_command_parser() -> argparse.ArgumentParser:
+def get_command_parser() -> Tuple[argparse.ArgumentParser, Dict[str, argparse.ArgumentParser]]:
     venv_container = VenvContainer(constants.PIPX_LOCAL_VENVS)
 
     completer_venvs = InstalledVenvsCompleter(venv_container)
@@ -736,6 +774,7 @@ def get_command_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command", description="Get help for commands with pipx COMMAND --help")
 
+    subparsers_with_subcommands = {}
     _add_install(subparsers, shared_parser)
     _add_uninject(subparsers, completer_venvs.use, shared_parser)
     _add_inject(subparsers, completer_venvs.use, shared_parser)
@@ -746,6 +785,7 @@ def get_command_parser() -> argparse.ArgumentParser:
     _add_reinstall(subparsers, completer_venvs.use, shared_parser)
     _add_reinstall_all(subparsers, shared_parser)
     _add_list(subparsers, shared_parser)
+    subparsers_with_subcommands["interpreter"] = _add_interpreter(subparsers, shared_parser)
     _add_run(subparsers, shared_parser)
     _add_runpip(subparsers, completer_venvs.use, shared_parser)
     _add_ensurepath(subparsers, shared_parser)
@@ -758,7 +798,7 @@ def get_command_parser() -> argparse.ArgumentParser:
         description="Print instructions on enabling shell completions for pipx",
         parents=[shared_parser],
     )
-    return parser
+    return parser, subparsers_with_subcommands
 
 
 def delete_oldest_logs(file_list: List[Path], keep_number: int) -> None:
@@ -917,7 +957,7 @@ def cli() -> ExitCode:
     """Entry point from command line"""
     try:
         hide_cursor()
-        parser = get_command_parser()
+        parser, subparsers = get_command_parser()
         argcomplete.autocomplete(parser)
         parsed_pipx_args = parser.parse_args()
         setup(parsed_pipx_args)
@@ -925,7 +965,7 @@ def cli() -> ExitCode:
         if not parsed_pipx_args.command:
             parser.print_help()
             return ExitCode(1)
-        return run_pipx_command(parsed_pipx_args)
+        return run_pipx_command(parsed_pipx_args, subparsers)
     except PipxError as e:
         print(str(e), file=sys.stderr)
         logger.debug(f"PipxError: {e}", exc_info=True)
