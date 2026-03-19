@@ -36,6 +36,7 @@ from pipx.interpreter import (
     InterpreterResolutionError,
     find_python_interpreter,
 )
+from pipx.package_specifier import valid_pypi_name
 from pipx.util import PipxError, mkdir, pipx_wrap, rmdir
 from pipx.venv import VenvContainer
 from pipx.version import version as __version__
@@ -213,7 +214,7 @@ def package_is_url(package: str, raise_error: bool = True) -> bool:
 
 
 def package_is_path(package: str):
-    if os.path.sep in package:
+    if os.path.sep in package or Path(package).exists():
         raise PipxError(
             pipx_wrap(
                 f"""
@@ -242,14 +243,16 @@ def run_pipx_command(args: argparse.Namespace, subparsers: dict[str, argparse.Ar
                 if "#egg=" not in args.spec:
                     args.spec = args.spec + f"#egg={package}"
 
-        venv_dir = venv_container.get_venv_dir(package)
+        venv_dir = venv_container.get_venv_dir(valid_pypi_name(package) or package)
         logger.info(f"Virtual Environment location is {venv_dir}")
 
     if "packages" in args:
         for package in args.packages:
             package_is_url(package)
             package_is_path(package)
-        venv_dirs = {package: venv_container.get_venv_dir(package) for package in args.packages}
+        venv_dirs = {
+            package: venv_container.get_venv_dir(valid_pypi_name(package) or package) for package in args.packages
+        }
         venv_dirs_msg = "\n".join(f"- {key} : {value}" for key, value in venv_dirs.items())
         logger.info(f"Virtual Environment locations are:\n{venv_dirs_msg}")
 
@@ -291,7 +294,7 @@ def run_pipx_command(args: argparse.Namespace, subparsers: dict[str, argparse.Ar
             not args.no_cache,
         )
         # We should never reach here because run() is NoReturn.
-        return ExitCode(1)
+        return ExitCode(1)  # type: ignore[unreachable]
     elif args.command == "install":
         return commands.install(
             None,
@@ -422,7 +425,7 @@ def run_pipx_command(args: argparse.Namespace, subparsers: dict[str, argparse.Ar
             python_flag_passed=python_flag_passed,
         )
     elif args.command == "runpip":
-        if not venv_dir:
+        if not venv_dir:  # type: ignore[truthy-bool]
             raise PipxError("Developer error: venv_dir is not defined.")
         runpip_args = get_runpip_args(args.pipargs)
         return commands.run_pip(package, venv_dir, runpip_args, args.verbose)
@@ -1001,9 +1004,30 @@ def get_command_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.Ar
         prog=prog_name(),
         formatter_class=LineWrapRawTextHelpFormatter,
         description=PIPX_DESCRIPTION,
-        parents=[shared_parser],
     )
     parser.man_short_description = PIPX_DESCRIPTION.splitlines()[1]  # type: ignore[attr-defined]
+
+    parser.add_argument(
+        "--quiet",
+        "-q",
+        action="count",
+        default=0,
+        help=(
+            "Give less output. May be used multiple times corresponding to the"
+            " ERROR and CRITICAL logging levels. The count maxes out at 2."
+        ),
+    )
+
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="count",
+        default=0,
+        help=(
+            "Give more output. May be used multiple times corresponding to the"
+            " INFO, DEBUG and NOTSET logging levels. The count maxes out at 3."
+        ),
+    )
 
     subparsers = parser.add_subparsers(dest="command", description="Get help for commands with pipx COMMAND --help")
 

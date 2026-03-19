@@ -322,11 +322,7 @@ def get_exposed_man_paths_for_package(
     return get_exposed_paths_for_package(
         venv_man_path,
         local_man_dir,
-        [
-            (name[len(prefix) :] if name.startswith(prefix) else name)
-            for name in package_man_pages or []
-            if name.startswith(prefix)
-        ],
+        [name.removeprefix(prefix) for name in package_man_pages or [] if name.startswith(prefix)],
     )
 
 
@@ -467,9 +463,11 @@ def run_post_install_actions(
             expose_resources_globally("man", local_man_dir, man_paths, force=force)
 
     package_summary, _ = get_venv_summary(venv_dir, package_name=package_name, new_install=True)
-    print(package_summary)
-    warn_if_not_on_path(local_bin_dir)
-    print(f"done! {stars}", file=sys.stderr)
+    pipx_logger = logging.getLogger("pipx")
+    if not pipx_logger.handlers or pipx_logger.handlers[0].level <= logging.WARNING:
+        print(package_summary)
+        warn_if_not_on_path(local_bin_dir)
+        print(f"done! {stars}", file=sys.stderr)
 
 
 def warn_if_not_on_path(local_bin_dir: Path) -> None:

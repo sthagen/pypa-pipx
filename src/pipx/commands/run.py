@@ -51,7 +51,11 @@ def maybe_script_content(app: str, is_path: bool) -> Optional[Union[str, Path]]:
     app_path = Path(app)
     if app_path.is_file():
         return app_path
-    elif is_path:
+    # In case it's a named pipe, read it out to pass to the interpreter
+    if app_path.is_fifo():
+        return app_path.read_text(encoding="utf-8")
+
+    if is_path:
         raise PipxError(f"The specified path {app} does not exist")
 
     # Check for a URL
@@ -219,11 +223,11 @@ def run(
         # we can't parse this as a package
         package_name = app
 
-    content = None if spec is not None else maybe_script_content(app, is_path)
+    content = None if spec is not None else maybe_script_content(app, is_path)  # type: ignore[redundant-expr]
     if content is not None:
         run_script(content, app_args, python, pip_args, venv_args, verbose, use_cache)
     else:
-        package_or_url = spec if spec is not None else app
+        package_or_url = spec if spec is not None else app  # type: ignore[redundant-expr]
         run_package(
             package_name,
             package_or_url,
