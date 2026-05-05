@@ -9,6 +9,15 @@ This project uses [*towncrier*](https://towncrier.readthedocs.io/) for keeping t
 
 <!-- towncrier release notes start -->
 
+## [1.11.2](https://github.com/pypa/pipx/tree/1.11.2) - 2026-05-05
+
+### Features
+
+- Add ``pipx help`` and ``pipx help <command>`` aliases for existing help output. ([#1535](https://github.com/pypa/pipx/issues/1535))
+- Drop support for Python 3.9. ([#1786](https://github.com/pypa/pipx/issues/1786))
+- Replace if/elif command dispatch in main.py with argparse set_defaults. ([#1794](https://github.com/pypa/pipx/issues/1794))
+
+
 ## [1.11.1](https://github.com/pypa/pipx/tree/1.11.1) - 2026-03-31
 
 ### Bugfixes
