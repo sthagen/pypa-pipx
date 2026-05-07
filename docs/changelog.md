@@ -9,6 +9,38 @@ This project uses [*towncrier*](https://towncrier.readthedocs.io/) for keeping t
 
 <!-- towncrier release notes start -->
 
+## [1.12.0](https://github.com/pypa/pipx/tree/1.12.0) - 2026-05-06
+
+### Features
+
+- Add `--fetch-python` and `PIPX_FETCH_PYTHON` to control standalone Python downloads, with values `always`, `missing`, or
+  `never`. ([#1663](https://github.com/pypa/pipx/issues/1663))
+- Add an opt-in `uv` backend. Install `pipx[uv]` (or put `uv` on `PATH`) and pipx will create venvs with `uv venv`, manage
+  packages with `uv pip`, and run ephemeral apps via `uv tool run`.
+
+  **Default change:** when `uv` is reachable, pipx uses it for **new** venvs by default. Existing venvs keep their
+  recorded backend; flipping a venv requires `pipx reinstall NAME --backend X`. Set `PIPX_DEFAULT_BACKEND=pip` to force
+  pip even when uv is available, or pass `--backend pip` per command. `pipx install pip` always picks the pip backend (uv
+  venvs have no pip).
+
+  Selection precedence: `--backend` > recorded venv metadata > `PIPX_DEFAULT_BACKEND` > auto-detect. The env var sits
+  *below* metadata so setting `PIPX_DEFAULT_BACKEND=uv` does not silently retarget existing pip-backed venvs; the recorded
+  backend wins until you flip it explicitly. `pipx environment` exposes the resolved backend and its source as
+  `PIPX_RESOLVED_BACKEND` and `PIPX_BACKEND_SOURCE`.
+
+  **Metadata version bump:** the venv metadata file format moves from `0.5` to `0.6` to record the chosen backend. Running
+  this pipx version against an existing venv rewrites its metadata to `0.6` on the next install/upgrade. If you downgrade
+  pipx after that, the older version raises `Unknown metadata version 0.6` and you'll need to reinstall the affected venvs
+  from the older pipx (`pipx reinstall NAME`). ([#1808](https://github.com/pypa/pipx/issues/1808))
+
+### Deprecations and Removals
+
+- Deprecate `--fetch-missing-python` and `PIPX_FETCH_MISSING_PYTHON`; both are now aliases for `--fetch-python=missing` /
+  `PIPX_FETCH_PYTHON=missing`. `PIPX_FETCH_MISSING_PYTHON=0` (and other falsy values) now disables fetching, where
+  previously any value enabled it. The `pipx.interpreter.find_python_interpreter` keyword `fetch_missing_python: bool` is
+  replaced by `fetch_python: FetchPythonOptions`. ([#1663](https://github.com/pypa/pipx/issues/1663))
+
+
 ## [1.11.2](https://github.com/pypa/pipx/tree/1.11.2) - 2026-05-05
 
 ### Features

@@ -23,14 +23,20 @@ from packaging.utils import canonicalize_name
 
 from pipx import commands, constants, paths
 from pipx.animate import hide_cursor, show_cursor
+from pipx.backends import KNOWN_BACKENDS, UV, env_default_backend, get_backend, resolve_backend_name
 from pipx.colors import bold, green
 from pipx.commands.environment import ENVIRONMENT_VALUE_CHOICES, ENVIRONMENT_VARIABLES
 from pipx.constants import (
+    _FETCH_MISSING_PYTHON_RAW,
+    _FETCH_PYTHON,
+    _FETCH_PYTHON_INVALID,
+    _FETCH_PYTHON_RAW,
     EXIT_CODE_OK,
     EXIT_CODE_SPECIFIED_PYTHON_EXECUTABLE_NOT_FOUND,
     MINIMUM_PYTHON_VERSION,
     WINDOWS,
     ExitCode,
+    FetchPythonOptions,
 )
 from pipx.emojis import hazard
 from pipx.interpreter import (
@@ -95,6 +101,7 @@ PIPX_DESCRIPTION += pipx_wrap(
       PIPX_MAN_DIR           Overrides location of manual pages installations. Manual pages are symlinked or copied here.
       PIPX_GLOBAL_MAN_DIR    Used instead of PIPX_MAN_DIR when the `--global` option is given.
       PIPX_DEFAULT_PYTHON    Overrides default python used for commands.
+      PIPX_DEFAULT_BACKEND   Overrides which backend (`pip` or `uv`) is used for new venvs.
       PIPX_USE_EMOJI         Overrides emoji behavior. Default value varies based on platform.
       PIPX_HOME_ALLOW_SPACE  Overrides default warning on spaces in the home path
     """,
@@ -206,6 +213,10 @@ def get_venv_args(parsed_args: dict[str, str]) -> list[str]:
     return venv_args
 
 
+def get_backend_arg(parsed_args: dict[str, str]) -> str | None:
+    return parsed_args.get("backend") or None
+
+
 def package_is_url(package: str, raise_error: bool = True) -> bool:
     url_parse_package = urllib.parse.urlparse(package)
     if url_parse_package.scheme and url_parse_package.netloc:
@@ -227,6 +238,20 @@ def package_is_path(package: str):
         )
 
 
+def _validate_fetch_python() -> None:
+    if _FETCH_PYTHON_INVALID:
+        valid = ", ".join(str(option) for option in FetchPythonOptions)
+        raise PipxError(f"PIPX_FETCH_PYTHON must be unset or one of: {valid}.")
+    if _FETCH_MISSING_PYTHON_RAW is not None:
+        if _FETCH_PYTHON_RAW is not None:
+            raise PipxError("Setting both PIPX_FETCH_MISSING_PYTHON and PIPX_FETCH_PYTHON is invalid.")
+        print(
+            f"{hazard} PIPX_FETCH_MISSING_PYTHON is deprecated; "
+            f'use PIPX_FETCH_PYTHON="{FetchPythonOptions.MISSING}" instead.',
+            file=sys.stderr,
+        )
+
+
 def run_pipx_command(args: argparse.Namespace) -> ExitCode:
     if "package" in args:
         package_is_url(args.package)
@@ -239,20 +264,22 @@ def run_pipx_command(args: argparse.Namespace) -> ExitCode:
     spec: str | None = getattr(args, "spec", None)
     if "package" in args and spec is not None:
         if package_is_url(spec, raise_error=False) and "#egg=" not in spec:
-            spec = spec + f"#egg={args.package}"
+            spec = f"{spec}#egg={args.package}"
 
     python = DEFAULT_PYTHON
     python_flag_passed = False
     if "python" in args:
         python_flag_passed = bool(args.python)
         try:
-            python = find_python_interpreter(
-                args.python or DEFAULT_PYTHON, fetch_missing_python=args.fetch_missing_python
-            )
+            python = find_python_interpreter(args.python or DEFAULT_PYTHON, fetch_python=args.fetch_python)
         except InterpreterResolutionError as e:
             logger.debug("Failed to resolve interpreter:", exc_info=True)
             print(pipx_wrap(f"{hazard} {e}", subsequent_indent=" " * 4))
             return EXIT_CODE_SPECIFIED_PYTHON_EXECUTABLE_NOT_FOUND
+
+    cli_backend = get_backend_arg(vars(args))
+    env_backend = env_default_backend()
+    _validate_backend_available(cli_backend, env_backend)
 
     ctx = DispatchContext(
         verbose=bool(args.verbose) if "verbose" in args else False,
@@ -263,8 +290,23 @@ def run_pipx_command(args: argparse.Namespace) -> ExitCode:
         python=python,
         python_flag_passed=python_flag_passed,
         spec=spec,
+        backend=cli_backend,
+        env_backend=env_backend,
     )
     return args.func(args, ctx)
+
+
+def _validate_backend_available(cli_backend: str | None, env_backend: str | None) -> None:
+    """Eagerly surface a missing uv when ``--backend uv`` was passed.
+
+    Env-source and auto-detect stay silent so diagnostic commands (which never
+    instantiate a backend) keep working, and so unrelated PATH ``uv`` doesn't
+    pay a ``uv --version`` subprocess on every command.
+    """
+    name, source = resolve_backend_name(cli_value=cli_backend, env_value=env_backend)
+    logger.info(f"Backend resolved to {name} (source: {source})")
+    if name == UV and source == "cli":
+        get_backend(name)
 
 
 @dataclass(frozen=True)
@@ -277,6 +319,15 @@ class DispatchContext:
     python: str
     python_flag_passed: bool
     spec: str | None
+    backend: str | None = None
+    env_backend: str | None = None
+
+    @property
+    def effective_backend(self) -> str | None:
+        # Use ``backend`` and ``env_backend`` separately when building a
+        # :class:`pipx.venv.Venv`; this only collapses them for code paths
+        # without metadata to consult.
+        return self.backend or self.env_backend
 
 
 def add_pip_venv_args(parser: argparse.ArgumentParser) -> None:
@@ -294,12 +345,49 @@ def add_pip_venv_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--pip-args",
-        help="Arbitrary pip arguments to pass directly to pip install/upgrade commands",
+        help=(
+            "Arbitrary pip arguments to pass directly to pip install/upgrade commands. "
+            "Under the uv backend a small subset is translated (--index-url, --extra-index-url, "
+            "--find-links, --pre); other flags raise an error so behaviour stays explicit."
+        ),
+    )
+
+
+def add_backend_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--backend",
+        choices=list(KNOWN_BACKENDS),
+        default=None,
+        help=(
+            "Backend used for creating venvs and managing packages. Defaults to "
+            "PIPX_DEFAULT_BACKEND when set, else 'uv' when uv is available "
+            "(via the `pipx[uv]` extra or on PATH), else 'pip'. Existing venvs "
+            "always honor their recorded backend unless this flag is given."
+        ),
     )
 
 
 def add_include_dependencies(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--include-deps", help="Include apps of dependent packages", action="store_true")
+
+
+class _DeprecatedFetchMissingPython(argparse.Action):
+    def __init__(self, option_strings: list[str], dest: str, **kwargs: Any) -> None:
+        super().__init__(option_strings, dest, nargs=0, **kwargs)
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Any,
+        option_string: str | None = None,
+    ) -> None:
+        if not {"--help", "-h"}.intersection(sys.argv):
+            print(
+                f"{hazard} {option_string} is deprecated; use --fetch-python={FetchPythonOptions.MISSING} instead.",
+                file=sys.stderr,
+            )
+        setattr(namespace, self.dest, FetchPythonOptions.MISSING)
 
 
 def add_python_options(parser: argparse.ArgumentParser) -> None:
@@ -311,12 +399,25 @@ def add_python_options(parser: argparse.ArgumentParser) -> None:
             f"or the full path to the executable. Requires Python {MINIMUM_PYTHON_VERSION} or above."
         ),
     )
-    parser.add_argument(
-        "--fetch-missing-python",
-        action="store_true",
+    fetch_python_group = parser.add_mutually_exclusive_group()
+    fetch_python_group.add_argument(
+        "--fetch-python",
+        type=FetchPythonOptions,
+        choices=list(FetchPythonOptions),
+        default=_FETCH_PYTHON,
         help=(
-            "Whether to fetch a standalone python build from GitHub if the specified python version is not found locally on the system."
+            f"When to fetch a standalone Python build from python-build-standalone. "
+            f"'{FetchPythonOptions.ALWAYS}' always downloads (ignores any system Python); "
+            f"'{FetchPythonOptions.MISSING}' downloads only when the requested version is not found locally; "
+            f"'{FetchPythonOptions.NEVER}' never downloads. "
+            "Defaults to PIPX_FETCH_PYTHON, or 'never'."
         ),
+    )
+    fetch_python_group.add_argument(
+        "--fetch-missing-python",
+        dest="fetch_python",
+        action=_DeprecatedFetchMissingPython,
+        help="Deprecated: alias for --fetch-python=missing.",
     )
 
 
@@ -351,6 +452,7 @@ def _add_install(subparsers: argparse._SubParsersAction, shared_parser: argparse
         ),
     )
     add_pip_venv_args(p)
+    add_backend_arg(p)
     p.set_defaults(func=_cmd_install)
 
 
@@ -371,6 +473,8 @@ def _cmd_install(args: argparse.Namespace, ctx: DispatchContext) -> ExitCode:
         preinstall_packages=args.preinstall,
         suffix=args.suffix,
         python_flag_passed=ctx.python_flag_passed,
+        backend=ctx.backend,
+        env_backend=ctx.env_backend,
     )
 
 
@@ -391,6 +495,7 @@ def _add_install_all(subparsers: argparse._SubParsersAction, shared_parser: argp
     )
     add_python_options(p)
     add_pip_venv_args(p)
+    add_backend_arg(p)
     p.set_defaults(func=_cmd_install_all)
 
 
@@ -404,6 +509,8 @@ def _cmd_install_all(args: argparse.Namespace, ctx: DispatchContext) -> ExitCode
         ctx.venv_args,
         ctx.verbose,
         force=args.force,
+        backend=ctx.backend,
+        env_backend=ctx.env_backend,
     )
 
 
@@ -458,6 +565,7 @@ def _add_inject(subparsers, venv_completer: VenvCompleter, shared_parser: argpar
         action="store_true",
         help="Add the suffix (if given) of the Virtual Environment to the packages to inject",
     )
+    add_backend_arg(p)
     p.set_defaults(func=_cmd_inject)
 
 
@@ -472,6 +580,8 @@ def _cmd_inject(args: argparse.Namespace, ctx: DispatchContext) -> ExitCode:
         include_dependencies=args.include_deps,
         force=args.force,
         suffix=args.with_suffix,
+        backend=ctx.backend,
+        env_backend=ctx.env_backend,
     )
 
 
@@ -580,6 +690,7 @@ def _add_upgrade(subparsers, venv_completer: VenvCompleter, shared_parser: argpa
         help="Install package spec if missing",
     )
     add_python_options(p)
+    add_backend_arg(p)
     p.set_defaults(func=_cmd_upgrade)
 
 
@@ -594,6 +705,8 @@ def _cmd_upgrade(args: argparse.Namespace, ctx: DispatchContext) -> ExitCode:
         force=args.force,
         install=args.install,
         python_flag_passed=ctx.python_flag_passed,
+        backend=ctx.backend,
+        env_backend=ctx.env_backend,
     )
 
 
@@ -617,6 +730,7 @@ def _add_upgrade_all(subparsers: argparse._SubParsersAction, shared_parser: argp
         help="Modify existing virtual environment and files in PIPX_BIN_DIR and PIPX_MAN_DIR",
     )
     add_pip_venv_args(p)
+    add_backend_arg(p)
     p.set_defaults(func=_cmd_upgrade_all)
 
 
@@ -629,6 +743,8 @@ def _cmd_upgrade_all(args: argparse.Namespace, ctx: DispatchContext) -> ExitCode
         force=args.force,
         pip_args=ctx.pip_args,
         python_flag_passed=ctx.python_flag_passed,
+        backend=ctx.backend,
+        env_backend=ctx.env_backend,
     )
 
 
@@ -697,6 +813,7 @@ def _add_reinstall(subparsers, venv_completer: VenvCompleter, shared_parser: arg
     )
     p.add_argument("package").completer = venv_completer
     add_python_options(p)
+    add_backend_arg(p)
     p.set_defaults(func=_cmd_reinstall)
 
 
@@ -708,6 +825,8 @@ def _cmd_reinstall(args: argparse.Namespace, ctx: DispatchContext) -> ExitCode:
         python=ctx.python,
         verbose=ctx.verbose,
         python_flag_passed=ctx.python_flag_passed,
+        backend=ctx.backend,
+        env_backend=ctx.env_backend,
     )
 
 
@@ -731,6 +850,7 @@ def _add_reinstall_all(subparsers: argparse._SubParsersAction, shared_parser: ar
     )
     add_python_options(p)
     p.add_argument("--skip", nargs="+", default=[], help="skip these packages")
+    add_backend_arg(p)
     p.set_defaults(func=_cmd_reinstall_all)
 
 
@@ -743,6 +863,8 @@ def _cmd_reinstall_all(args: argparse.Namespace, ctx: DispatchContext) -> ExitCo
         ctx.verbose,
         skip=ctx.skip_list,
         python_flag_passed=ctx.python_flag_passed,
+        backend=ctx.backend,
+        env_backend=ctx.env_backend,
     )
 
 
@@ -867,6 +989,7 @@ def _add_run(subparsers: argparse._SubParsersAction, shared_parser: argparse.Arg
     p.add_argument("--spec", help=SPEC_HELP)
     add_python_options(p)
     add_pip_venv_args(p)
+    add_backend_arg(p)
     p.set_defaults(subparser=p, func=_cmd_run)
 
     # modify usage text to show required app argument
@@ -888,6 +1011,8 @@ def _cmd_run(args: argparse.Namespace, ctx: DispatchContext) -> NoReturn:
         args.pypackages,
         ctx.verbose,
         not args.no_cache,
+        backend=ctx.backend,
+        env_backend=ctx.env_backend,
     )
 
 
@@ -1275,6 +1400,7 @@ def cli() -> ExitCode:
         parser, _ = get_command_parser()
         argcomplete.autocomplete(parser, always_complete_options=False)
         parsed_pipx_args = parser.parse_args(normalize_help_command(sys.argv[1:]))
+        _validate_fetch_python()
         setup(parsed_pipx_args)
         check_args(parsed_pipx_args)
         if not parsed_pipx_args.command:

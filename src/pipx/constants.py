@@ -1,14 +1,42 @@
+import enum
 import os
 import platform
 import sysconfig
 from textwrap import dedent
 from typing import NewType
 
+
+# enum.StrEnum is Python 3.11+; pipx supports 3.10.
+class FetchPythonOptions(str, enum.Enum):
+    ALWAYS = "always"
+    MISSING = "missing"
+    NEVER = "never"
+
+    def __str__(self) -> str:
+        return self.value
+
+
 PIPX_SHARED_PTH = "pipx_shared.pth"
 TEMP_VENV_EXPIRATION_THRESHOLD_DAYS = 14
 MINIMUM_PYTHON_VERSION = "3.10"
 MAN_SECTIONS = [f"man{i}" for i in range(1, 10)]
-FETCH_MISSING_PYTHON = os.environ.get("PIPX_FETCH_MISSING_PYTHON", False)
+
+
+_FETCH_MISSING_PYTHON_RAW = os.environ.get("PIPX_FETCH_MISSING_PYTHON")
+_FETCH_PYTHON_RAW = os.environ.get("PIPX_FETCH_PYTHON")
+_FALSY = ("", "0", "false", "f", "no", "n", "off")
+
+
+def _compute_fetch_python(missing_raw: str | None, python_raw: str | None) -> tuple[FetchPythonOptions, bool]:
+    fetch_missing = missing_raw is not None and missing_raw.strip().lower() not in _FALSY
+    raw = python_raw or (FetchPythonOptions.MISSING.value if fetch_missing else FetchPythonOptions.NEVER.value)
+    try:
+        return FetchPythonOptions(raw), False
+    except ValueError:
+        return FetchPythonOptions.NEVER, True
+
+
+_FETCH_PYTHON, _FETCH_PYTHON_INVALID = _compute_fetch_python(_FETCH_MISSING_PYTHON_RAW, _FETCH_PYTHON_RAW)
 
 
 ExitCode = NewType("ExitCode", int)
