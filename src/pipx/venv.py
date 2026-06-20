@@ -324,12 +324,14 @@ class Venv:
         include_apps: bool,
         is_main_package: bool,
         suffix: str = "",
+        install_only_pip_args: list[str] | None = None,
     ) -> None:
         # package_name in package specifier can mismatch URL due to user error
         package_or_url = fix_package_name(package_or_url, package_name)
 
         # check syntax and clean up spec and pip_args
         (package_or_url, pip_args) = parse_specifier_for_install(package_or_url, pip_args)
+        install_pip_args = [*(install_only_pip_args or []), *pip_args]
 
         _LOGGER.info("Installing %s", package_descr := full_package_description(package_name, package_or_url))
         with animate(f"installing {package_descr}", self.do_animation):
@@ -337,7 +339,7 @@ class Venv:
                 venv_root=self.root,
                 venv_python=self.python_path,
                 requirements=[package_or_url],
-                pip_args=pip_args,
+                pip_args=install_pip_args,
                 verbose=self.verbose,
             )
         if process.returncode:
@@ -390,10 +392,13 @@ class Venv:
                 verbose=self.verbose,
             )
         if process.returncode:
+            error_output = (process.stderr or process.stdout or "").strip()
+            if error_output:
+                raise PipxError(error_output, wrap_message=False)
             raise PipxError(
                 f"""
-                Cannot determine package name from spec {package_or_url!r}.
-                Check package spec for errors.
+                Error determining package name from spec {package_or_url!r}.
+                See installer output for details.
                 """
             )
 

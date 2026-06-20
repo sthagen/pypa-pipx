@@ -10,6 +10,8 @@ import pytest
 from helpers import app_name, run_pipx_cli, skip_if_windows, unwrap_log_text
 from package_info import PKG
 from pipx import paths, shared_libs
+from pipx.util import PipxError
+from pipx.venv import Venv
 
 TEST_DATA_PATH = "./testdata/test_package_specifier"
 
@@ -263,7 +265,33 @@ def test_pip_args_forwarded_to_package_name_determination(pipx_temp_env, capsys)
         ]
     )
     captured = capsys.readouterr()
-    assert "Cannot determine package name from spec" in captured.err
+    assert "--asdf" in captured.err
+    assert "Cannot determine package name from spec" not in captured.err
+
+
+def test_package_name_determination_preserves_install_error(monkeypatch):
+    class FailingBackend:
+        def install(self, **kwargs):
+            return subprocess.CompletedProcess(
+                ["pip", "install", "requires-newer-python"],
+                1,
+                stdout="",
+                stderr="ERROR: Package 'requires-newer-python' requires a different Python\n",
+            )
+
+    def no_installed_packages():
+        return set()
+
+    venv = Venv(Path("requires-newer-python-venv"))
+    monkeypatch.setattr(venv, "_backend", FailingBackend())
+    monkeypatch.setattr(venv, "list_installed_packages", no_installed_packages)
+
+    with pytest.raises(PipxError) as excinfo:
+        venv.install_package_no_deps("requires-newer-python", [])
+
+    error = str(excinfo.value)
+    assert "requires a different Python" in error
+    assert "Cannot determine package name from spec" not in error
 
 
 @pytest.mark.skipif(not sys.platform.startswith("win"), reason="Windows only")
@@ -308,10 +336,8 @@ def test_pip_args_with_wrong_constraint_fail(constraint_flag, pipx_ultra_temp_en
 
     assert run_pipx_cli(["install", f"--pip-args='{constraint_flag}{constraint_file_name}'", "pycowsay"])
 
-    assert (
-        f"ERROR: Could not open requirements file: [Errno 2] No such file or directory: '{constraint_file_name}'"
-        in capsys.readouterr().err
-    )
+    # pip phrases this as "requirements file" (<26) or "constraint file" (>=26), so match the common part
+    assert f"[Errno 2] No such file or directory: '{constraint_file_name}'" in capsys.readouterr().err
 
 
 def test_install_suffix(pipx_temp_env, capsys):
@@ -338,6 +364,21 @@ def test_man_page_install(pipx_temp_env, capsys):
     captured = capsys.readouterr()
     assert f"- {Path('man6/pycowsay.6')}" in captured.out
     assert (paths.ctx.man_dir / "man6" / "pycowsay.6").exists()
+
+
+def test_editable_install_links_man_pages(pipx_temp_env, capsys, root):
+    package = (root / TEST_DATA_PATH / "local_manpage").as_posix()
+
+    assert not run_pipx_cli(["install", "--editable", package])
+    captured = capsys.readouterr()
+
+    assert f"- {app_name('local-manpage')}\n" in captured.out
+    assert f"- {Path('man1/local-manpage.1')}" in captured.out
+    assert (paths.ctx.venvs / "local-manpage" / "share" / "man" / "man1" / "local-manpage.1").exists()
+    assert (paths.ctx.man_dir / "man1" / "local-manpage.1").exists()
+
+    assert not run_pipx_cli(["uninstall", "local-manpage"])
+    assert not (paths.ctx.man_dir / "man1" / "local-manpage.1").exists()
 
 
 def test_install_pip_failure(pipx_temp_env, capsys):
