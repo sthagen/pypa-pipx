@@ -63,7 +63,8 @@ sudo pipx --global install pycowsay
 
 Default global paths are `/usr/local/bin` for binaries, `/usr/local/share/man` for man pages, and `/opt/pipx` for
 virtual environments. Override them with `PIPX_GLOBAL_BIN_DIR`, `PIPX_GLOBAL_MAN_DIR`, and `PIPX_GLOBAL_HOME`. Run
-`sudo pipx ensurepath --global` to add the global binary directory to the system `PATH`.
+`sudo pipx ensurepath --global` to add the global binary directory to the system `PATH`. On Linux, this writes
+`/etc/profile.d/pipx.sh`. On macOS, it writes `/etc/paths.d/pipx`.
 
 The `--global` flag is not supported on Windows.
 
@@ -98,6 +99,16 @@ in your shell profile or in pip's own config file (`pip.conf` / `pip.ini`). See 
 
 Set `PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=1` to skip automatic shared library upgrades during commands such as
 `pipx install` and `pipx upgrade`. The explicit `pipx upgrade-shared` command still upgrades the shared libraries.
+
+Use `--skip-maintenance` to apply the same policy to one command.
+
+```
+pipx install --skip-maintenance my-package
+```
+
+When pipx must create the shared environment, this policy keeps the pip version bundled with Python instead of
+downloading a replacement. It is not a general offline mode; pass pip options such as `--no-index` and `--find-links` to
+control where application packages come from.
 
 Per-command pip options can be passed with `--pip-args`:
 

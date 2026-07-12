@@ -40,7 +40,7 @@ class RelevantSearch:
 
 def _get_trash_file(path: Path) -> Path:
     if not paths.ctx.trash.is_dir():
-        paths.ctx.trash.mkdir()
+        paths.ctx.trash.mkdir(exist_ok=True)
     prefix = "".join(random.choices(string.ascii_lowercase, k=8))
     return paths.ctx.trash / f"{prefix}.{path.name}"
 
@@ -53,15 +53,20 @@ def rmdir(path: Path, safe_rm: bool = True) -> None:
     # Windows doesn't let us delete or overwrite files that are being run
     # But it does let us rename/move it. To get around this issue, we can move
     # the file to a temporary folder (to be deleted at a later time)
-    # So, if safe_rm is True, we ignore any errors and move the file to the trash with below code
-    shutil.rmtree(path, ignore_errors=safe_rm)
+    # Always ignore errors so locked files don't make cleanup fatal. If the
+    # directory is still present afterwards, safe_rm controls whether it is
+    # moved to the trash or left in place with a warning.
+    shutil.rmtree(path, ignore_errors=True)
 
     # move it to be deleted later if it still exists
     if path.is_dir():
         if safe_rm:
             _LOGGER.warning(f"Failed to delete {path}. Will move it to a temp folder to delete later.")
 
-            path.rename(_get_trash_file(path))
+            try:
+                path.rename(_get_trash_file(path))
+            except OSError as error:
+                _LOGGER.warning("Failed to move %s to the trash; remove it by hand (%s).", path, error)
         else:
             _LOGGER.warning(f"Failed to delete {path}. You may need to delete it manually.")
 
@@ -78,7 +83,7 @@ def safe_unlink(file: Path) -> None:
     # But it does let us rename/move it. To get around this issue, we can move
     # the file to a temporary folder (to be deleted at a later time)
 
-    if not file.is_file():
+    if not file.is_file() and not file.is_symlink():
         return
     try:
         file.unlink()
@@ -134,7 +139,7 @@ def get_site_packages(python: Path) -> Path:
     return path
 
 
-def _fix_subprocess_env(env: dict[str, str]) -> dict[str, str]:
+def _fix_subprocess_env(env: dict[str, str], *, force_utf8: bool = True) -> dict[str, str]:
     # Remove PYTHONPATH because some platforms (macOS with Homebrew) add pipx
     #   directories to it, and can make it appear to venvs as though pipx
     #   dependencies are in the venv path (#233)
@@ -145,9 +150,9 @@ def _fix_subprocess_env(env: dict[str, str]) -> dict[str, str]:
         env.pop(env_to_remove, None)
 
     env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
-    # Make sure that Python writes output in UTF-8
-    env["PYTHONIOENCODING"] = "utf-8"
-    env["PYTHONLEGACYWINDOWSSTDIO"] = "utf-8"
+    if force_utf8:
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONLEGACYWINDOWSSTDIO"] = "utf-8"
     # Make sure we install packages to venv, not to userbase or a custom target dir
     env["PIP_USER"] = "0"
     env.pop("PIP_TARGET", None)
@@ -384,7 +389,7 @@ def exec_app(
 
     if env is None:
         env = dict(os.environ)
-    env = _fix_subprocess_env(env)
+    env = _fix_subprocess_env(env, force_utf8=False)
 
     if extra_python_paths is not None:
         env["PYTHONPATH"] = os.path.pathsep.join(
@@ -397,17 +402,7 @@ def exec_app(
     _LOGGER.info(f"exec_app: {' '.join(str(c) for c in cmd)}")
 
     if WINDOWS:
-        sys.exit(
-            subprocess.run(
-                cmd,
-                env=env,
-                stdout=None,
-                stderr=None,
-                encoding="utf-8",
-                text=True,
-                check=False,
-            ).returncode
-        )
+        sys.exit(subprocess.run(cmd, env=env, check=False).returncode)
     else:
         os.execvpe(str(cmd[0]), [str(x) for x in cmd], env)
 

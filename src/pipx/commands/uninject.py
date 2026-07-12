@@ -1,11 +1,11 @@
 import logging
-import os
 from importlib import metadata
 from pathlib import Path
 
 from packaging.utils import canonicalize_name
 
 from pipx.colors import bold
+from pipx.commands.common import add_suffix
 from pipx.commands.uninstall import (
     _get_package_bin_dir_app_paths,
     _get_package_man_paths,
@@ -17,9 +17,9 @@ from pipx.constants import (
     ExitCode,
 )
 from pipx.emojis import stars
-from pipx.util import PipxError, pipx_wrap
+from pipx.util import PipxError, pipx_wrap, safe_unlink
 from pipx.venv import Venv
-from pipx.venv_inspect import fetch_info_in_venv, get_dist, get_required_dependency_names
+from pipx.venv_inspect import fetch_info_in_venv, get_distributions_by_name, get_required_dependency_names
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +122,7 @@ def uninject_dep(
     if need_app_uninstall:
         for path in new_resource_paths:
             try:
-                os.unlink(path)
+                safe_unlink(path)
             except FileNotFoundError:
                 logger.info(f"tried to remove but couldn't find {path}")
             else:
@@ -146,10 +146,10 @@ def get_include_resource_paths(package_name: str, venv: Venv, local_bin_dir: Pat
         )
 
     pkg_metadata = venv.package_metadata[package_name]
-    all_apps = set(pkg_metadata.apps)
+    all_apps = {add_suffix(app, pkg_metadata.suffix) for app in pkg_metadata.apps}
     all_man_pages = set(pkg_metadata.man_pages)
     if pkg_metadata.include_dependencies:
-        all_apps.update(pkg_metadata.apps_of_dependencies)
+        all_apps.update(add_suffix(app, pkg_metadata.suffix) for app in pkg_metadata.apps_of_dependencies)
         all_man_pages.update(pkg_metadata.man_pages_of_dependencies)
 
     need_to_remove = set()
@@ -159,14 +159,14 @@ def get_include_resource_paths(package_name: str, venv: Venv, local_bin_dir: Pat
     for man_path in man_paths:
         path = Path(man_path.parent.name) / man_path.name
         if str(path) in all_man_pages:
-            need_to_remove.add(path)
+            need_to_remove.add(man_path)
 
     return need_to_remove
 
 
 def _get_remaining_dependencies(venv: Venv, excluded_package: str) -> set[str]:
     venv_sys_path, venv_env, _ = fetch_info_in_venv(venv.python_path)
-    distributions = tuple(metadata.distributions(path=venv_sys_path))
+    distributions = get_distributions_by_name(venv_sys_path)
 
     remaining_deps: set[str] = set()
     remaining_packages: list[str] = [
@@ -182,7 +182,7 @@ def _get_remaining_dependencies(venv: Venv, excluded_package: str) -> set[str]:
 
 def _collect_transitive_deps(
     package_name: str,
-    distributions: tuple[metadata.Distribution, ...],
+    distributions: dict[str, metadata.Distribution],
     env: dict[str, str],
     visited: set[str] | None = None,
 ) -> set[str]:
@@ -192,7 +192,12 @@ def _collect_transitive_deps(
     if canonical in visited:
         return visited
     visited.add(canonical)
-    if dist := get_dist(package_name, distributions):
+    if dist := distributions.get(canonical):
         for dep_name in get_required_dependency_names(dist, env):
             _collect_transitive_deps(dep_name, distributions, env, visited)
     return visited
+
+
+__all__ = [
+    "uninject",
+]

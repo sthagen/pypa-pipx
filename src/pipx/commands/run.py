@@ -37,6 +37,7 @@ else:
 _LOGGER: Final[logging.Logger] = logging.getLogger(__name__)
 
 _VENV_EXPIRED_FILENAME: Final[str] = "pipx_expired_venv"
+_VCS_SCHEMES: Final[frozenset[str]] = frozenset({"bzr", "git", "hg", "svn"})
 
 _APP_NOT_FOUND_ERROR_MESSAGE: Final[str] = """\
 '{app}' executable script not found in package '{package_name}'.
@@ -61,11 +62,14 @@ def maybe_script_content(app: str, is_path: bool) -> str | Path | None:
 
     # Check for a URL
     if urllib.parse.urlparse(app).scheme:
+        if _is_vcs_url(app):
+            return None
         if not app.endswith(".py"):
             raise PipxError(
                 """
                 pipx will only execute apps from the internet directly if they
-                end with '.py'. To run from an SVN, try pipx --spec URL BINARY
+                end with '.py'. To run a package from another URL, use
+                'pipx run --spec URL BINARY'.
                 """
             )
         _LOGGER.info("Detected url. Downloading and executing as a Python file.")
@@ -93,14 +97,16 @@ def run_script(
 ) -> NoReturn:
     requirements = _get_requirements_from_script(content)
 
-    if dependencies and not requirements:
-        # Plain scripts have nowhere to record extra requirements; the pip path
-        # silently dropped ``--with`` here, but a clear error is better.
-        raise PipxError(
-            "--with packages can only be applied to scripts with PEP 723 inline metadata "
-            "(`# /// script` block). Add the dependencies to the script's metadata or run "
-            "via `pipx run --spec`."
-        )
+    if dependencies:
+        if requirements is None:
+            # Plain scripts have nowhere to record extra requirements; the pip path
+            # silently dropped ``--with`` here, but a clear error is better.
+            raise PipxError(
+                "--with packages can only be applied to scripts with PEP 723 inline metadata "
+                "(`# /// script` block). Add the dependencies to the script's metadata or run "
+                "via `pipx run --spec`."
+            )
+        requirements = [*requirements, *dependencies]
 
     if resolved_backend == UV and requirements is not None:
         if script_source is not None:
@@ -176,17 +182,18 @@ def run_package(
     verbose: bool,
     use_cache: bool,
     *,
+    infer_app_name: bool = False,
     backend: str | None = None,
     env_backend: str | None = None,
     resolved_backend: str | None = None,
     no_path_check: bool = False,
 ) -> NoReturn:
-    if not no_path_check and which(app):
+    if not no_path_check and (app_path := which(app)):
         _LOGGER.warning(
             pipx_wrap(
                 f"""
                 {hazard}  {app} is already on your PATH and installed at
-                {which(app)}. Downloading and running anyway.
+                {app_path}. Downloading and running anyway.
                 """,
                 subsequent_indent=" " * 4,
             )
@@ -214,6 +221,9 @@ def run_package(
     venv_dir = _get_temporary_venv_path([package_or_url], python, pip_args, venv_args, resolved_backend or "pip")
 
     venv = Venv(venv_dir, backend=backend, env_backend=env_backend)
+    if infer_app_name and venv.pipx_metadata.main_package.package is not None:
+        app = venv.pipx_metadata.main_package.package
+        app_filename = f"{app}.exe" if WINDOWS else app
     bin_path = venv.bin_path / app_filename
     _prepare_venv_cache(venv, bin_path, use_cache)
 
@@ -231,6 +241,7 @@ def run_package(
             venv_args,
             use_cache,
             verbose,
+            infer_app_name=infer_app_name,
             backend=backend,
             env_backend=env_backend,
         )
@@ -272,12 +283,10 @@ def run(
     package
     """
 
-    # For any package, we need to just use the name
     try:
         package_name = Requirement(app).name
     except InvalidRequirement:
-        # Raw URLs to scripts are supported, too, so continue if
-        # we can't parse this as a package
+        # Raw script URLs are not valid package requirements.
         package_name = app
 
     # ``resolved_backend`` only decides ROUTING (uv tool run vs Venv); cli/env
@@ -301,6 +310,7 @@ def run(
             script_source=Path(app) if isinstance(content, Path) else None,
             dependencies=dependencies,
         )
+
     elif use_uvx:
         run_via_uv_tool_run(
             app=app,
@@ -327,6 +337,7 @@ def run(
             pypackages,
             verbose,
             use_cache,
+            infer_app_name=spec is None and _is_vcs_url(app),
             backend=backend,
             env_backend=env_backend,
             resolved_backend=resolved_backend,
@@ -345,6 +356,7 @@ def _prepare_venv(
     use_cache: bool,
     verbose: bool,
     *,
+    infer_app_name: bool = False,
     backend: str | None = None,
     env_backend: str | None = None,
 ) -> tuple[Venv, str, str]:
@@ -355,6 +367,10 @@ def _prepare_venv(
         package_name = venv.pipx_metadata.main_package.package
     else:
         package_name = package_name_from_spec(package_or_url, python, pip_args=pip_args, verbose=verbose)
+
+    if infer_app_name:
+        app = package_name
+        app_filename = f"{app}.exe" if WINDOWS else app
 
     override_shared = package_name == "pip"
 
@@ -398,6 +414,12 @@ def _prepare_venv(
     return venv, app, app_filename
 
 
+def _is_vcs_url(value: str) -> bool:
+    scheme = urllib.parse.urlparse(value).scheme
+    vcs, separator, _ = scheme.partition("+")
+    return bool(separator) and vcs in _VCS_SCHEMES
+
+
 def _get_temporary_venv_path(
     requirements: list[str],
     python: str,
@@ -438,7 +460,7 @@ def _prepare_venv_cache(venv: Venv, bin_path: Path | None, use_cache: bool) -> N
 
 def _remove_all_expired_venvs() -> None:
     for venv_dir in Path(paths.ctx.venv_cache).iterdir():
-        if _is_temporary_venv_expired(venv_dir):
+        if venv_dir.is_dir() and _is_temporary_venv_expired(venv_dir):
             _LOGGER.info(f"Removing expired venv {venv_dir!s}")
             rmdir(venv_dir)
 

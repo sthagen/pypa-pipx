@@ -2,24 +2,21 @@ import logging
 import shutil
 import time
 from collections.abc import Generator
+from importlib.metadata import Distribution, EntryPoint
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, NoReturn
 
 if TYPE_CHECKING:
     from subprocess import CompletedProcess
 
-try:
-    from importlib.metadata import Distribution, EntryPoint
-except ImportError:
-    from importlib_metadata import Distribution, EntryPoint  # type: ignore[import-not-found,no-redef]
-
 from packaging.utils import canonicalize_name
+from packaging.version import Version
 
 from pipx.animate import animate
 from pipx.backends import Backend, assert_not_pip_under_uv, env_default_backend, get_backend, resolve_backend_name
 from pipx.constants import PIPX_SHARED_PTH, ExitCode
 from pipx.emojis import hazard
-from pipx.interpreter import DEFAULT_PYTHON
+from pipx.interpreter import get_default_python
 from pipx.package_specifier import (
     fix_package_name,
     get_extras,
@@ -46,6 +43,7 @@ from pipx.util import (
 from pipx.venv_inspect import VenvMetadata, inspect_venv
 
 _LOGGER: Final[logging.Logger] = logging.getLogger(__name__)
+_BACKEND_METADATA_VERSION: Final[Version] = Version("0.6")
 
 # Keyed on full path so global vs user-local venvs with the same name don't
 # collide; deduped per-session because ``upgrade-all --backend uv`` against
@@ -131,12 +129,12 @@ class Venv:
         path: Path,
         *,
         verbose: bool = False,
-        python: str = DEFAULT_PYTHON,
+        python: str | None = None,
         backend: str | None = None,
         env_backend: str | None = None,
     ) -> None:
         self.root = path
-        self.python = python
+        self.python = python or get_default_python()
         self.bin_path, self.python_path, self.man_path = get_venv_paths(self.root)
         self.pipx_metadata = PipxMetadata(venv_dir=path)
         self.verbose = verbose
@@ -153,6 +151,7 @@ class Venv:
             env_backend=env_backend,
         )
         self._backend: Backend | None = None
+        self._site_packages: Path | None = None
         self._uses_shared_libs_cache: bool | None = None
 
     @property
@@ -220,7 +219,7 @@ class Venv:
         # (or missing file) fall back to the .pth probe so legacy venvs still
         # report correctly.
         recorded_version = self.pipx_metadata.read_metadata_version
-        if recorded_version is not None and recorded_version >= "0.6":
+        if recorded_version is not None and Version(recorded_version) >= _BACKEND_METADATA_VERSION:
             answer = self.pipx_metadata.backend == "pip"
         else:
             answer = next(self.root.glob(f"**/{PIPX_SHARED_PTH}"), None) is not None
@@ -258,6 +257,7 @@ class Venv:
             include_pip=override_shared,
             verbose=self.verbose,
         )
+        self._site_packages = None
 
         self.pipx_metadata.venv_args = venv_args
         # Persist the chosen backend on disk only when actually creating the venv.
@@ -471,10 +471,16 @@ class Venv:
             not_required=not_required,
         )
 
+    @property
+    def site_packages(self) -> Path:
+        if self._site_packages is None:
+            self._site_packages = get_site_packages(self.python_path)
+        return self._site_packages
+
     def _find_entry_point(self, app: str) -> EntryPoint | None:
         if not self.python_path.exists():
             return None
-        dists = Distribution.discover(name=self.main_package_name, path=[str(get_site_packages(self.python_path))])
+        dists = Distribution.discover(name=self.main_package_name, path=[str(self.site_packages)])
         for dist in dists:
             for ep in dist.entry_points:
                 if ep.group == "pipx.run":
@@ -505,7 +511,7 @@ class Venv:
         return (self.bin_path / filename).is_file()
 
     def has_package(self, package_name: str) -> bool:
-        return bool(list(Distribution.discover(name=package_name, path=[str(get_site_packages(self.python_path))])))
+        return bool(list(Distribution.discover(name=package_name, path=[str(self.site_packages)])))
 
     def upgrade_package_no_metadata(self, package_name: str, pip_args: list[str]) -> None:
         _LOGGER.info("Upgrading %s", package_descr := full_package_description(package_name, package_name))
@@ -530,6 +536,7 @@ class Venv:
         include_apps: bool,
         is_main_package: bool,
         suffix: str = "",
+        upgrade_only_pip_args: list[str] | None = None,
     ) -> None:
         _LOGGER.info("Upgrading %s", package_descr := full_package_description(package_name, package_or_url))
         with animate(f"upgrading {package_descr}", self.do_animation):
@@ -537,7 +544,7 @@ class Venv:
                 venv_root=self.root,
                 venv_python=self.python_path,
                 requirements=[package_or_url],
-                pip_args=pip_args,
+                pip_args=[*(upgrade_only_pip_args or []), *pip_args],
                 upgrade=True,
                 log_pip_errors=False,
                 verbose=self.verbose,

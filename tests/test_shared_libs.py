@@ -2,10 +2,14 @@ import json
 import os
 import subprocess
 import time
+from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 from unittest.mock import patch
 
 import pytest
+from pytest_mock import MockerFixture
 
 from pipx import shared_libs
 from pipx.constants import PIPX_SHARED_PTH, WINDOWS
@@ -81,6 +85,87 @@ def test_shared_libs_excludes_setuptools(pipx_ultra_temp_env: None) -> None:
     installed = {pkg["name"].lower() for pkg in json.loads(result.stdout)}
     assert "pip" in installed
     assert "setuptools" not in installed
+
+
+def test_shared_libs_create_preserves_pip_args(pipx_ultra_temp_env: None) -> None:
+    pip_args = ["--disable-pip-version-check"]
+    shared_libs.shared_libs.create(pip_args=pip_args)
+    assert (pip_args, shared_libs.shared_libs.is_valid) == (["--disable-pip-version-check"], True)
+
+
+def test_shared_libs_create_without_index_when_auto_upgrade_disabled(
+    pipx_ultra_temp_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(shared_libs.DISABLE_SHARED_LIBS_AUTO_UPGRADE, "1")
+
+    shared_libs.shared_libs.create(pip_args=["--no-index"])
+
+    assert shared_libs.shared_libs.is_valid
+
+
+def test_shared_libs_validity_check_is_cached(pipx_ultra_temp_env: None, mocker: MockerFixture) -> None:
+    shared_libs.shared_libs.python_path.parent.mkdir(parents=True)
+    shared_libs.shared_libs.python_path.touch()
+    shared_libs.shared_libs.pip_path.touch()
+    run_subprocess = mocker.patch(
+        "pipx.shared_libs.run_subprocess",
+        autospec=True,
+        return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="ModuleSpec", stderr=""),
+    )
+
+    assert (shared_libs.shared_libs.is_valid, shared_libs.shared_libs.is_valid) == (True, True)
+    run_subprocess.assert_called_once()
+
+
+def test_shared_libs_upgrade_enforces_pip_floor(
+    pipx_ultra_temp_env: None,
+    mocker: MockerFixture,
+) -> None:
+    shared_libs.shared_libs.create(verbose=True, pip_args=[])
+    shared_libs.shared_libs.has_been_updated_this_run = False
+    run_subprocess = mocker.patch(
+        "pipx.shared_libs.run_subprocess",
+        return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+    )
+
+    shared_libs.shared_libs.upgrade(pip_args=["pip==20"], verbose=True, raises=True)
+
+    install_command = run_subprocess.call_args.args[0]
+    run_subprocess.assert_called_once()
+    assert "pip==20" in install_command
+    assert "pip >= 23.1" in install_command
+
+
+def test_shared_libs_upgrade_serializes_concurrent_calls(
+    pipx_ultra_temp_env: None,
+    mocker: MockerFixture,
+) -> None:
+    shared_libs.shared_libs.create(verbose=True, pip_args=[])
+    shared_libs.shared_libs.has_been_updated_this_run = False
+    first_started = Event()
+    release_first = Event()
+    second_started = Event()
+
+    def run_upgrade(_command: Sequence[str | Path]) -> subprocess.CompletedProcess[str]:
+        if first_started.is_set():
+            second_started.set()
+        else:
+            first_started.set()
+            if not release_first.wait(5):
+                raise TimeoutError("concurrent shared library test did not release the first upgrade")
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+    mocker.patch("pipx.shared_libs.run_subprocess", autospec=True, side_effect=run_upgrade)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_upgrade = executor.submit(shared_libs.shared_libs.upgrade, pip_args=[], verbose=True, raises=True)
+        assert first_started.wait(5)
+        second_upgrade = executor.submit(shared_libs.shared_libs.upgrade, pip_args=[], verbose=True, raises=True)
+        try:
+            assert not second_started.wait(0.5)
+        finally:
+            release_first.set()
+        first_upgrade.result(timeout=5)
+        second_upgrade.result(timeout=5)
 
 
 def test_venv_python_is_valid_non_windows() -> None:

@@ -1,6 +1,8 @@
+import datetime
 import importlib
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -64,18 +66,18 @@ def test_cache(pipx_temp_env, monkeypatch, capsys, caplog):
 
 
 @mock.patch("os.execvpe", new=execvpe_mock)
-def test_no_path_check(pipx_temp_env, monkeypatch, capsys, caplog):
-    def fake_which(_app):
-        return "/fake/bin/pycowsay"
-
+def test_no_path_check(pipx_temp_env: None, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    which = mock.Mock(return_value="/fake/bin/pycowsay")
     for module_name in ("pipx.commands.run", "pipx.commands.run_uv"):
-        monkeypatch.setattr(importlib.import_module(module_name), "which", fake_which)
+        monkeypatch.setattr(importlib.import_module(module_name), "which", which)
 
     run_pipx_cli_exit(["run", "pycowsay", "cowsay", "args"])
+    which.assert_called_once_with("pycowsay")
     assert "is already on your PATH" in caplog.text
 
     caplog.clear()
     run_pipx_cli_exit(["run", "--no-path-check", "pycowsay", "cowsay", "args"])
+    which.assert_called_once_with("pycowsay")
     assert "is already on your PATH" not in caplog.text
 
 
@@ -99,6 +101,34 @@ def test_cachedir_tag(pipx_ultra_temp_env, monkeypatch, capsys, caplog):
     # Verify the tag file starts with the required signature.
     with tag_path.open("r") as tag_file:
         assert tag_file.read().startswith("Signature: 8a477f597d28d172789f06886806bc55")
+
+
+@mock.patch("os.execvpe", new=execvpe_mock)
+def test_cache_sweep_ignores_tag(
+    pipx_ultra_temp_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    run_pipx_cli_exit(["run", "pycowsay", "cowsay", "args"])
+    tag_path = paths.ctx.venv_cache / "CACHEDIR.TAG"
+    expired_venv = paths.ctx.venv_cache / "expired"
+    expired_venv.mkdir()
+
+    class FutureDateTime(datetime.datetime):
+        @classmethod
+        def now(cls, tz: datetime.tzinfo | None = None) -> "FutureDateTime":
+            return cls.fromtimestamp((super().now(tz) + datetime.timedelta(days=15)).timestamp(), tz)
+
+    monkeypatch.setattr(datetime, "datetime", FutureDateTime)
+    caplog.set_level(logging.INFO)
+    caplog.clear()
+
+    run_pipx_cli_exit(["run", "pycowsay", "cowsay", "args"])
+
+    assert not expired_venv.exists()
+    assert tag_path.exists()
+    assert f"Removing expired venv {tag_path}" not in caplog.text
 
 
 @mock.patch("os.execvpe", new=execvpe_mock)
@@ -209,6 +239,42 @@ def test_run_without_requirements(caplog, pipx_temp_env, tmp_path):
     assert out.read_text() == test_str
 
 
+@pytest.mark.parametrize(
+    ("encoding", "script_text"),
+    [
+        pytest.param("cp850", 'print("äöü")', id="cp850-text"),
+        pytest.param(
+            "cp437",
+            'import sys; print("┏━┓" if sys.stdout.encoding == "utf-8" else "+-+")',
+            id="cp437-terminal-fallback",
+        ),
+    ],
+)
+def test_run_preserves_console_encoding(tmp_path: Path, encoding: str, script_text: str) -> None:
+    script = tmp_path / "console_output.py"
+    script.write_text(script_text, encoding="utf-8")
+    env = os.environ | {
+        "PIPX_DEFAULT_BACKEND": "pip",
+        "PIPX_HOME": str(tmp_path / "pipx"),
+        "PYTHONIOENCODING": encoding,
+    }
+
+    direct_output = subprocess.run(
+        [sys.executable, script],
+        env=env,
+        stdout=subprocess.PIPE,
+        check=True,
+    ).stdout
+    pipx_output = subprocess.run(
+        [sys.executable, "-m", "pipx", "run", script],
+        env=env,
+        stdout=subprocess.PIPE,
+        check=True,
+    ).stdout
+
+    assert pipx_output == direct_output
+
+
 @mock.patch("os.execvpe", new=execvpe_mock)
 @pytest.mark.parametrize(
     "script_text, expected_output",
@@ -262,6 +328,38 @@ def test_run_with_requirements(script_text, expected_output, caplog, pipx_temp_e
     )
     run_pipx_cli_exit(["run", script.as_uri()])
     assert out.read_text() == expected_output
+
+
+@mock.patch("os.execvpe", new=execvpe_mock)
+def test_run_with_requirements_and_cli_with_pip_backend(pipx_temp_env, tmp_path):
+    script = tmp_path / "test.py"
+    out = tmp_path / "output.txt"
+    script.write_text(
+        textwrap.dedent(
+            f"""
+            # /// script
+            # dependencies = ["requests==2.31.0"]
+            # ///
+
+            import black
+            import requests
+            from pathlib import Path
+
+            Path({str(out)!r}).write_text(f"requests={{requests.__version__}}, package={{black.__name__}}")
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+
+    run_pipx_cli_exit(
+        ["run", "--backend", "pip", "--with", PKG["black"]["spec"], script.as_uri()],
+        assert_exit=0,
+    )
+    assert out.read_text() == "requests=2.31.0, package=black"
+
+    out.unlink()
+    run_pipx_cli_exit(["run", "--backend", "pip", script.as_uri()], assert_exit=1)
+    assert not out.exists()
 
 
 @mock.patch("os.execvpe", new=execvpe_mock)
@@ -523,6 +621,38 @@ def test_run_local_path_entry_point(pipx_temp_env, caplog, root):
     run_pipx_cli_exit(["run", empty_project_path])
 
     assert "Using discovered entry point for 'pipx run'" in caplog.text
+
+
+@mock.patch("os.execvpe", new=execvpe_mock)
+def test_run_vcs_url_infers_app_name(pipx_temp_env, root, tmp_path, caplog):
+    project = tmp_path / "empty-project-vcs"
+    shutil.copytree(root / "testdata" / "empty_project", project)
+    pyproject = project / "pyproject.toml"
+    pyproject.write_text(pyproject.read_text().replace("empty_project.main:cli", "empty_project.main:main"))
+    subprocess.run(["git", "init", "--quiet"], cwd=project, check=True)
+    subprocess.run(["git", "add", "."], cwd=project, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=pipx tests",
+            "-c",
+            "user.email=pipx@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "test fixture",
+        ],
+        cwd=project,
+        check=True,
+    )
+
+    command = ["run", "--backend", "pip", f"git+{project.as_uri()}"]
+    run_pipx_cli_exit(command, assert_exit=0)
+    run_pipx_cli_exit(command, assert_exit=0)
+
+    assert caplog.text.count("Determined package name: empty-project") == 1
+    assert "Reusing cached venv" in caplog.text
 
 
 @mock.patch("os.execvpe", new=execvpe_mock)

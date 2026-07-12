@@ -4,6 +4,7 @@ import pytest
 
 from pipx.package_specifier import (
     fix_package_name,
+    package_spec_satisfied,
     parse_specifier_for_install,
     parse_specifier_for_metadata,
     parse_specifier_for_upgrade,
@@ -26,6 +27,22 @@ TEST_DATA_PATH = "./testdata/test_package_specifier"
 )
 def test_valid_pypi_name(package_spec_in, package_name_out):
     assert valid_pypi_name(package_spec_in) == package_name_out
+
+
+@pytest.mark.parametrize(
+    "package_spec,installed_spec,expected",
+    [
+        ("black>=22,<23", "black==22.8.0", True),
+        ("black<22", "black==22.8.0", False),
+        ("Black", "black==22.8.0", True),
+        ("black[colorama]", "black==22.8.0", False),
+        ("black[colorama]", "black[colorama]==22.8.0", True),
+        ("black @ https://example.com/black.whl", "black==22.8.0", False),
+        ("https://example.com/black.whl", "black==22.8.0", False),
+    ],
+)
+def test_package_spec_satisfied(package_spec, installed_spec, expected):
+    assert package_spec_satisfied(package_spec, "black", "22.8.0", installed_spec) is expected
 
 
 @pytest.mark.parametrize(
@@ -285,6 +302,10 @@ def test_parse_specifier_for_install(
             ["-c", "https://example.com/constraints.txt"],
         ),
         (
+            ["-chttps://example.com/constraints.txt"],
+            ["-chttps://example.com/constraints.txt"],
+        ),
+        (
             ["--constraint", "https://example.com/constraints.txt"],
             ["--constraint", "https://example.com/constraints.txt"],
         ),
@@ -297,12 +318,87 @@ def test_parse_specifier_for_install(
             ["-c", str(Path("constraints.txt").resolve())],
         ),
         (
+            ["-cconstraints.txt"],
+            [f"-c{Path('constraints.txt').resolve()}"],
+        ),
+        (
             ["--constraint=constraints.txt"],
             [f"--constraint={Path('constraints.txt').resolve()}"],
         ),
     ],
+    ids=[
+        "short-separated-url",
+        "short-attached-url",
+        "long-separated-url",
+        "long-equals-url",
+        "short-separated-path",
+        "short-attached-path",
+        "long-equals-path",
+    ],
 )
 def test_parse_specifier_for_install_constraint_args(
+    pip_args_in: list[str],
+    pip_args_expected: list[str],
+) -> None:
+    _, pip_args_out = parse_specifier_for_install("pipx", pip_args_in)
+    assert pip_args_out == pip_args_expected
+
+
+@pytest.mark.parametrize(
+    "package_spec",
+    [
+        "git+file:///tmp/project@main",
+        "hg+file:///tmp/project@default",
+    ],
+    ids=["git", "mercurial"],
+)
+def test_parse_specifier_for_install_accepts_local_vcs_url(package_spec: str) -> None:
+    assert parse_specifier_for_install(package_spec, []) == (package_spec, [])
+
+
+@pytest.mark.parametrize(
+    "pip_args_in,pip_args_expected",
+    [
+        (
+            ["-f", "https://example.com/wheels"],
+            ["-f", "https://example.com/wheels"],
+        ),
+        (
+            ["-fhttps://example.com/wheels"],
+            ["-fhttps://example.com/wheels"],
+        ),
+        (
+            ["--find-links", "https://example.com/wheels"],
+            ["--find-links", "https://example.com/wheels"],
+        ),
+        (
+            ["--find-links=https://example.com/wheels"],
+            ["--find-links=https://example.com/wheels"],
+        ),
+        (
+            ["-f", "wheels"],
+            ["-f", str(Path("wheels").resolve())],
+        ),
+        (
+            ["-fwheels"],
+            [f"-f{Path('wheels').resolve()}"],
+        ),
+        (
+            ["--find-links=wheels"],
+            [f"--find-links={Path('wheels').resolve()}"],
+        ),
+    ],
+    ids=[
+        "short-separated-url",
+        "short-attached-url",
+        "long-separated-url",
+        "long-equals-url",
+        "short-separated-path",
+        "short-attached-path",
+        "long-equals-path",
+    ],
+)
+def test_parse_specifier_for_install_find_links_args(
     pip_args_in: list[str],
     pip_args_expected: list[str],
 ) -> None:

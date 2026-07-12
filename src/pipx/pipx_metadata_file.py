@@ -1,7 +1,9 @@
 import json
 import logging
+from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any, Final, TypedDict
 
 from pipx.backends._base import KNOWN_BACKENDS
@@ -11,7 +13,7 @@ from pipx.util import PipxError, pipx_wrap
 _LOGGER: Final[logging.Logger] = logging.getLogger(__name__)
 
 
-PIPX_INFO_FILENAME = "pipx_metadata.json"
+PIPX_INFO_FILENAME: Final[str] = "pipx_metadata.json"
 
 
 class _RawPackageInfo(TypedDict, total=False):
@@ -63,11 +65,10 @@ class _RawSpecFile(TypedDict, total=False):
 
 
 class JsonEncoderHandlesPath(json.JSONEncoder):
-    def default(self, obj: Any) -> Any:
-        # only handles what json.JSONEncoder doesn't understand by default
-        if isinstance(obj, Path):
-            return {"__type__": "Path", "__Path__": str(obj)}
-        return super().default(obj)
+    def default(self, o: Any) -> Any:
+        if isinstance(o, Path):
+            return {"__type__": "Path", "__Path__": str(o)}
+        return super().default(o)
 
 
 def _json_decoder_object_hook(json_dict: dict[str, Any]) -> dict[str, Any] | Path:
@@ -214,8 +215,17 @@ class PipxMetadata:
 
     def write(self) -> None:
         self._validate_before_write()
+        temporary_path: Path | None = None
         try:
-            with open(self.venv_dir / PIPX_INFO_FILENAME, "w", encoding="utf-8") as pipx_metadata_fh:
+            with NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=self.venv_dir,
+                prefix=f".{PIPX_INFO_FILENAME}.",
+                suffix=".tmp",
+                delete=False,
+            ) as pipx_metadata_fh:
+                temporary_path = Path(pipx_metadata_fh.name)
                 json.dump(
                     self.to_dict(),
                     pipx_metadata_fh,
@@ -223,6 +233,7 @@ class PipxMetadata:
                     sort_keys=True,
                     cls=JsonEncoderHandlesPath,
                 )
+            temporary_path.replace(self.venv_dir / PIPX_INFO_FILENAME)
         except OSError:
             _LOGGER.warning(
                 pipx_wrap(
@@ -235,13 +246,17 @@ class PipxMetadata:
                     subsequent_indent=" " * 4,
                 )
             )
+        finally:
+            if temporary_path is not None:
+                with suppress(OSError):
+                    temporary_path.unlink()
 
     def read(self, verbose: bool = False) -> None:
         try:
             with open(self.venv_dir / PIPX_INFO_FILENAME, "rb") as pipx_metadata_fh:
                 payload: _RawMetadata = json.load(pipx_metadata_fh, object_hook=_json_decoder_object_hook)
                 self.from_dict(payload)
-        except OSError:  # Reset self if problem reading
+        except (AttributeError, KeyError, OSError, PipxError, TypeError, ValueError):
             if verbose:
                 _LOGGER.warning(
                     pipx_wrap(

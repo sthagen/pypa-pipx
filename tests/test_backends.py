@@ -18,6 +18,7 @@ from pipx.backends import (
 )
 from pipx.backends.uv import UvBackend
 from pipx.commands.run_uv import translate_pip_args_for_uv
+from pipx.constants import PIPX_SHARED_PTH
 from pipx.main import _validate_backend_available
 from pipx.util import PipxError
 from pipx.venv import Venv, reset_backend_override_warnings
@@ -217,6 +218,29 @@ def test_find_uv_binary_is_cached(mocker: MockerFixture) -> None:
         ),
         pytest.param(["--pre"], ["--prerelease=allow"], id="pre-to-prerelease"),
         pytest.param(["--index-url=https://example.com"], ["--index-url=https://example.com"], id="equals-form"),
+        pytest.param(["--no-binary", ":all:"], ["--no-binary"], id="no-binary-all"),
+        pytest.param(
+            ["--no-binary", "one,two"],
+            ["--no-binary-package", "one", "--no-binary-package", "two"],
+            id="no-binary-packages",
+        ),
+        pytest.param(["--no-binary=:none:"], [], id="no-binary-none"),
+        pytest.param(["--only-binary", ":all:"], ["--no-build"], id="only-binary-all"),
+        pytest.param(
+            ["--only-binary=one,two"],
+            ["--no-build-package", "one", "--no-build-package", "two"],
+            id="only-binary-packages",
+        ),
+        pytest.param(
+            ["--trusted-host", "packages.example"],
+            ["--allow-insecure-host", "packages.example"],
+            id="trusted-host",
+        ),
+        pytest.param(
+            ["--trusted-host=packages.example"],
+            ["--allow-insecure-host=packages.example"],
+            id="trusted-host-equals",
+        ),
     ],
 )
 def test_translate_pip_args_for_uv(pip_args: list[str], expected: list[str]) -> None:
@@ -224,16 +248,22 @@ def test_translate_pip_args_for_uv(pip_args: list[str], expected: list[str]) -> 
 
 
 @pytest.mark.parametrize(
-    "pip_args",
+    ("pip_args", "match"),
     [
-        pytest.param(["--editable"], id="editable"),
-        pytest.param(["-e"], id="editable-short"),
-        pytest.param(["--no-build-isolation"], id="unknown-flag"),
-        pytest.param(["--index-url"], id="missing-value"),
+        pytest.param(["--editable"], "is not supported", id="editable"),
+        pytest.param(["-e"], "is not supported", id="editable-short"),
+        pytest.param(
+            ["--no-build-isolation"],
+            "contains '--no-build-isolation', which has no",
+            id="unknown-flag",
+        ),
+        pytest.param(["--no-deps"], "contains '--no-deps', which has no", id="no-deps"),
+        pytest.param(["--no-binary="], "Invalid value", id="empty-no-binary"),
+        pytest.param(["--index-url"], "Missing value", id="missing-value"),
     ],
 )
-def test_translate_pip_args_for_uv_errors(pip_args: list[str]) -> None:
-    with pytest.raises(PipxError):
+def test_translate_pip_args_for_uv_errors(pip_args: list[str], match: str) -> None:
+    with pytest.raises(PipxError, match=match):
         translate_pip_args_for_uv(pip_args)
 
 
@@ -324,6 +354,18 @@ def test_metadata_round_trip_includes_backend(tmp_path: Path) -> None:
 
     reread = pipx_metadata_file.PipxMetadata(venv_dir)
     assert reread.backend == "uv"
+
+
+def test_metadata_version_order_for_shared_libs(tmp_path: Path) -> None:
+    venv_dir = tmp_path / "venv"
+    site_packages = venv_dir / "lib/python/site-packages"
+    site_packages.mkdir(parents=True)
+    (site_packages / PIPX_SHARED_PTH).touch()
+    venv = Venv(venv_dir)
+    venv.pipx_metadata.read_metadata_version = "0.10"
+    venv.pipx_metadata.backend = UV
+
+    assert venv.uses_shared_libs is False
 
 
 def test_legacy_metadata_defaults_to_pip(tmp_path: Path) -> None:

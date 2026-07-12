@@ -1,11 +1,14 @@
 import logging
 import os
+from functools import cached_property
 from pathlib import Path
+from typing import Final
 
 from platformdirs import user_cache_path, user_data_path, user_log_path
 
 from pipx.constants import LINUX, WINDOWS
 from pipx.emojis import hazard, strtobool
+from pipx.self_install import get_environment_value
 from pipx.wrap import pipx_wrap
 
 if LINUX:
@@ -18,11 +21,11 @@ else:
     DEFAULT_PIPX_HOME = Path.home() / ".local/pipx"
     FALLBACK_PIPX_HOMES = [Path(user_data_path("pipx"))]
 
-DEFAULT_PIPX_BIN_DIR = Path.home() / ".local/bin"
-DEFAULT_PIPX_MAN_DIR = Path.home() / ".local/share/man"
-DEFAULT_PIPX_GLOBAL_HOME = Path("/opt/pipx")
-DEFAULT_PIPX_GLOBAL_BIN_DIR = Path("/usr/local/bin")
-DEFAULT_PIPX_GLOBAL_MAN_DIR = Path("/usr/local/share/man")
+DEFAULT_PIPX_BIN_DIR: Final[Path] = Path.home() / ".local/bin"
+DEFAULT_PIPX_MAN_DIR: Final[Path] = Path.home() / ".local/share/man"
+DEFAULT_PIPX_GLOBAL_HOME: Final[Path] = Path("/opt/pipx")
+DEFAULT_PIPX_GLOBAL_BIN_DIR: Final[Path] = Path("/usr/local/bin")
+DEFAULT_PIPX_GLOBAL_MAN_DIR: Final[Path] = Path("/usr/local/share/man")
 
 # Overrides for testing
 OVERRIDE_PIPX_HOME = None
@@ -33,14 +36,12 @@ OVERRIDE_PIPX_GLOBAL_HOME = None
 OVERRIDE_PIPX_GLOBAL_BIN_DIR = None
 OVERRIDE_PIPX_GLOBAL_MAN_DIR = None
 
-logger = logging.getLogger(__name__)
+_LOGGER: Final[logging.Logger] = logging.getLogger(__name__)
 
 
 def get_expanded_environ(env_name: str) -> Path | None:
-    val = os.environ.get(env_name)
-    if val is not None:
-        return Path(val).expanduser().resolve()
-    return val
+    val = get_environment_value(env_name)
+    return Path(val).expanduser().resolve() if val else None
 
 
 class _PathContext:
@@ -58,7 +59,7 @@ class _PathContext:
     _home_exists: bool
     log_file: Path | None = None
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.make_local()
 
     @property
@@ -83,27 +84,31 @@ class _PathContext:
             return self.home / ".cache"
         return self._default_cache
 
-    @property
+    @cached_property
     def bin_dir(self) -> Path:
         return (self._base_bin or self._default_bin).resolve()
 
-    @property
+    @cached_property
     def man_dir(self) -> Path:
         return (self._base_man or self._default_man).resolve()
 
-    @property
+    @cached_property
     def home(self) -> Path:
         if self._base_home:
-            home = Path(self._base_home)
+            home = self._base_home
         elif self._fallback_home:
             home = self._fallback_home
         else:
             home = self._default_home
         return home.resolve()
 
-    @property
+    @cached_property
     def shared_libs(self) -> Path:
         return (self._base_shared_libs or self.home / "shared").resolve()
+
+    def _clear_cached_paths(self) -> None:
+        for attribute in ("bin_dir", "home", "man_dir", "shared_libs"):
+            self.__dict__.pop(attribute, None)
 
     def make_local(self) -> None:
         self._base_home = OVERRIDE_PIPX_HOME or get_expanded_environ("PIPX_HOME")  # type: ignore[redundant-expr]
@@ -116,8 +121,9 @@ class _PathContext:
         self._default_log = Path(user_log_path("pipx"))
         self._default_cache = Path(user_cache_path("pipx"))
         self._default_trash = self._default_home / "trash"
-        self._fallback_home = next(iter([fallback for fallback in FALLBACK_PIPX_HOMES if fallback.exists()]), None)
+        self._fallback_home = next((fallback for fallback in FALLBACK_PIPX_HOMES if fallback.exists()), None)
         self._home_exists = self._base_home is not None or any(fallback.exists() for fallback in FALLBACK_PIPX_HOMES)
+        self._clear_cached_paths()
 
     def make_global(self) -> None:
         self._base_home = OVERRIDE_PIPX_GLOBAL_HOME or get_expanded_environ("PIPX_GLOBAL_HOME")  # type: ignore[redundant-expr]
@@ -132,6 +138,7 @@ class _PathContext:
         self._base_shared_libs = None
         self._fallback_home = None
         self._home_exists = self._base_home is not None
+        self._clear_cached_paths()
 
     @property
     def standalone_python_cachedir(self) -> Path:
@@ -141,9 +148,9 @@ class _PathContext:
     def allow_spaces_in_home_path(self) -> bool:
         return strtobool(os.getenv("PIPX_HOME_ALLOW_SPACE", "0"))
 
-    def log_warnings(self):
+    def log_warnings(self) -> None:
         if " " in str(self.home) and not self.allow_spaces_in_home_path:
-            logger.warning(
+            _LOGGER.warning(
                 pipx_wrap(
                     (
                         f"{hazard} Found a space in the pipx home path. We heavily discourage this, due to "
@@ -153,13 +160,13 @@ class _PathContext:
                     subsequent_indent=" " * 4,
                 )
             )
-            logger.warning(
+            _LOGGER.warning(
                 pipx_wrap(
                     (f"{hazard} To see your PIPX_HOME dir: pipx environment --value PIPX_HOME"),
                     subsequent_indent=" " * 4,
                 )
             )
-            logger.warning(
+            _LOGGER.warning(
                 pipx_wrap(
                     (f"{hazard} Most likely fix on macOS: mv ~/Library/Application\\ Support/pipx ~/.local/"),
                     subsequent_indent=" " * 4,
@@ -169,7 +176,7 @@ class _PathContext:
         fallback_home_exists = self._fallback_home is not None and self._fallback_home.exists()
         specific_home_exists = self.home != self._fallback_home
         if fallback_home_exists and specific_home_exists:
-            logger.info(
+            _LOGGER.info(
                 pipx_wrap(
                     (
                         f"Both a specific pipx home folder ({self.home}) and the fallback "
@@ -182,4 +189,22 @@ class _PathContext:
 
 
 ctx = _PathContext()
-ctx.log_warnings()
+
+
+__all__ = [
+    "DEFAULT_PIPX_BIN_DIR",
+    "DEFAULT_PIPX_GLOBAL_BIN_DIR",
+    "DEFAULT_PIPX_GLOBAL_HOME",
+    "DEFAULT_PIPX_GLOBAL_MAN_DIR",
+    "DEFAULT_PIPX_HOME",
+    "DEFAULT_PIPX_MAN_DIR",
+    "OVERRIDE_PIPX_BIN_DIR",
+    "OVERRIDE_PIPX_GLOBAL_BIN_DIR",
+    "OVERRIDE_PIPX_GLOBAL_HOME",
+    "OVERRIDE_PIPX_GLOBAL_MAN_DIR",
+    "OVERRIDE_PIPX_HOME",
+    "OVERRIDE_PIPX_MAN_DIR",
+    "OVERRIDE_PIPX_SHARED_LIBS",
+    "ctx",
+    "get_expanded_environ",
+]

@@ -15,7 +15,7 @@ import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, Final, NoReturn, cast
 
 import argcomplete
 import platformdirs
@@ -26,6 +26,7 @@ from pipx.animate import hide_cursor, show_cursor
 from pipx.backends import KNOWN_BACKENDS, UV, env_default_backend, get_backend, resolve_backend_name
 from pipx.colors import bold, green
 from pipx.commands.environment import ENVIRONMENT_VALUE_CHOICES, ENVIRONMENT_VARIABLES
+from pipx.commands.upgrade import UpgradeData
 from pipx.constants import (
     _FETCH_MISSING_PYTHON_RAW,
     _FETCH_PYTHON,
@@ -40,11 +41,14 @@ from pipx.constants import (
 )
 from pipx.emojis import hazard
 from pipx.interpreter import (
-    DEFAULT_PYTHON,
     InterpreterResolutionError,
     find_python_interpreter,
+    get_default_python,
+    get_default_python_spec,
 )
 from pipx.package_specifier import valid_pypi_name
+from pipx.result import OperationResult, render_result
+from pipx.shared_libs import skip_shared_libs_maintenance
 from pipx.util import PipxError, mkdir, pipx_wrap, rmdir
 from pipx.venv import VenvContainer
 from pipx.version import version as __version__
@@ -111,7 +115,7 @@ PIPX_DESCRIPTION += pipx_wrap(
     keep_newlines=True,
 )
 
-DOC_DEFAULT_PYTHON = os.getenv("PIPX__DOC_DEFAULT_PYTHON", DEFAULT_PYTHON)
+DOC_DEFAULT_PYTHON = os.getenv("PIPX__DOC_DEFAULT_PYTHON", get_default_python_spec())
 
 INSTALL_DESCRIPTION = textwrap.dedent(
     f"""
@@ -172,10 +176,16 @@ class LineWrapRawTextHelpFormatter(argparse.RawDescriptionHelpFormatter):
 
 class InstalledVenvsCompleter:
     def __init__(self, venv_container: VenvContainer) -> None:
-        self.packages = [str(p.name) for p in sorted(venv_container.iter_venv_dirs())]
+        self._venv_container: Final[VenvContainer] = venv_container
+        self._packages: list[str] | None = None
 
     def use(self, prefix: str, **kwargs: Any) -> list[str]:
-        return [f"{prefix}{x[len(prefix) :]}" for x in self.packages if x.startswith(canonicalize_name(prefix))]
+        if self._packages is None:
+            self._packages = [path.name for path in sorted(self._venv_container.iter_venv_dirs())]
+        canonical_prefix = canonicalize_name(prefix)
+        return [
+            f"{prefix}{name[len(canonical_prefix) :]}" for name in self._packages if name.startswith(canonical_prefix)
+        ]
 
 
 def get_pip_args(parsed_args: dict[str, str]) -> list[str]:
@@ -228,8 +238,8 @@ def package_is_url(package: str, raise_error: bool = True) -> bool:
     return False
 
 
-def package_is_path(package: str):
-    if os.path.sep in package:
+def package_is_path(package: str) -> None:
+    if any(separator in package for separator in (os.path.sep, os.path.altsep) if separator):
         raise PipxError(
             pipx_wrap(
                 f"""
@@ -268,12 +278,12 @@ def run_pipx_command(args: argparse.Namespace) -> ExitCode:
         if package_is_url(spec, raise_error=False) and "#egg=" not in spec:
             spec = f"{spec}#egg={args.package}"
 
-    python = DEFAULT_PYTHON
+    python = get_default_python()
     python_flag_passed = False
     if "python" in args:
         python_flag_passed = bool(args.python)
         try:
-            python = find_python_interpreter(args.python or DEFAULT_PYTHON, fetch_python=args.fetch_python)
+            python = find_python_interpreter(args.python or get_default_python(), fetch_python=args.fetch_python)
         except InterpreterResolutionError as e:
             logger.debug("Failed to resolve interpreter:", exc_info=True)
             print(pipx_wrap(f"{hazard} {e}", subsequent_indent=" " * 4))
@@ -295,7 +305,11 @@ def run_pipx_command(args: argparse.Namespace) -> ExitCode:
         backend=cli_backend,
         env_backend=env_backend,
     )
-    return args.func(args, ctx)
+    with skip_shared_libs_maintenance(getattr(args, "skip_maintenance", False)):
+        result = args.func(args, ctx)
+        if isinstance(result, OperationResult):
+            return render_result(result, json_output=getattr(args, "json", False), quiet=getattr(args, "quiet", 0))
+        return result
 
 
 def _validate_backend_available(cli_backend: str | None, env_backend: str | None) -> None:
@@ -440,6 +454,17 @@ def _add_install(subparsers: argparse._SubParsersAction, shared_parser: argparse
         help="Modify existing virtual environment and files in PIPX_BIN_DIR and PIPX_MAN_DIR",
     )
     p.add_argument(
+        "--upgrade",
+        "-U",
+        action="store_true",
+        help="Upgrade or downgrade an existing package when its version does not satisfy the supplied spec",
+    )
+    p.add_argument(
+        "--upgrade-strategy",
+        choices=["only-if-needed", "eager"],
+        help="How dependency upgrades are handled when --upgrade changes an existing package",
+    )
+    p.add_argument(
         "--suffix",
         default="",
         help="Optional suffix for virtual environment and executable names.",
@@ -470,6 +495,7 @@ def _cmd_install(args: argparse.Namespace, ctx: DispatchContext) -> ExitCode:
         ctx.venv_args,
         ctx.verbose,
         force=args.force,
+        upgrade=args.upgrade,
         reinstall=False,
         include_dependencies=args.include_deps,
         preinstall_packages=args.preinstall,
@@ -477,6 +503,7 @@ def _cmd_install(args: argparse.Namespace, ctx: DispatchContext) -> ExitCode:
         python_flag_passed=ctx.python_flag_passed,
         backend=ctx.backend,
         env_backend=ctx.env_backend,
+        upgrade_strategy=args.upgrade_strategy,
     )
 
 
@@ -696,7 +723,7 @@ def _add_upgrade(subparsers, venv_completer: VenvCompleter, shared_parser: argpa
     p.set_defaults(func=_cmd_upgrade)
 
 
-def _cmd_upgrade(args: argparse.Namespace, ctx: DispatchContext) -> ExitCode:
+def _cmd_upgrade(args: argparse.Namespace, ctx: DispatchContext) -> OperationResult[UpgradeData]:
     return commands.upgrade(
         _venv_dirs(args, ctx),
         ctx.python,
@@ -733,10 +760,11 @@ def _add_upgrade_all(subparsers: argparse._SubParsersAction, shared_parser: argp
     )
     add_pip_venv_args(p)
     add_backend_arg(p)
+    p.add_argument("--json", action="store_true", help="Output a machine-readable result.")
     p.set_defaults(func=_cmd_upgrade_all)
 
 
-def _cmd_upgrade_all(args: argparse.Namespace, ctx: DispatchContext) -> ExitCode:
+def _cmd_upgrade_all(args: argparse.Namespace, ctx: DispatchContext) -> OperationResult[UpgradeData]:
     return commands.upgrade_all(
         ctx.venv_container,
         ctx.verbose,
@@ -890,7 +918,6 @@ def _add_list(subparsers: argparse._SubParsersAction, shared_parser: argparse.Ar
         action="store_true",
         help="List pinned packages only. Pass --include-injected at the same time to list injected packages that were pinned.",
     )
-    g.add_argument("--skip-maintenance", action="store_true", help="(deprecated) No-op")
     p.set_defaults(func=_cmd_list)
 
 
@@ -1056,8 +1083,8 @@ def _add_ensurepath(subparsers: argparse._SubParsersAction, shared_parser: argpa
             "Ensure directory where pipx stores apps is in your "
             "PATH environment variable. Also if pipx was installed via "
             "`pip install --user`, ensure pipx itself is in your PATH. "
-            "Note that running this may modify "
-            "your shell's configuration file(s) such as '~/.bashrc'."
+            "This command may modify your shell configuration, such as '~/.bashrc', "
+            "or the system PATH configuration when used with `--global`."
         ),
         parents=[shared_parser],
     )
@@ -1094,7 +1121,11 @@ def _add_ensurepath(subparsers: argparse._SubParsersAction, shared_parser: argpa
 def _cmd_ensurepath(args: argparse.Namespace, ctx: DispatchContext) -> ExitCode:
     try:
         return commands.ensure_pipx_paths(
-            prepend=args.prepend, force=args.force, all_shells=args.all_shells, dry_run=args.dry_run
+            prepend=args.prepend,
+            force=args.force,
+            all_shells=args.all_shells,
+            dry_run=args.dry_run,
+            is_global=getattr(args, "is_global", False),
         )
     except Exception as e:
         logger.debug("Uncaught Exception:", exc_info=True)
@@ -1184,6 +1215,12 @@ def get_command_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.Ar
         ),
     )
 
+    shared_parser.add_argument(
+        "--skip-maintenance",
+        action="store_true",
+        help="Do not upgrade shared libraries; use bundled pip when creating them.",
+    )
+
     if not constants.WINDOWS:
         shared_parser.add_argument(
             "--global",
@@ -1197,7 +1234,7 @@ def get_command_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.Ar
         formatter_class=LineWrapRawTextHelpFormatter,
         description=PIPX_DESCRIPTION,
     )
-    parser.man_short_description = PIPX_DESCRIPTION.splitlines()[1]  # type: ignore[attr-defined]
+    vars(parser)["man_short_description"] = PIPX_DESCRIPTION.splitlines()[1]
 
     subparsers = parser.add_subparsers(dest="command", description="Get help for commands with pipx COMMAND --help")
 
@@ -1284,7 +1321,7 @@ def setup_log_file() -> Path:
 
 
 def setup_logging(verbose: int) -> None:
-    pipx_str = (sys.stdout and sys.stdout.isatty() and bold(green("pipx >"))) or "pipx >"
+    pipx_str = bold(green("pipx >")) if sys.stdout and sys.stdout.isatty() else "pipx >"
     paths.ctx.log_file = setup_log_file()
 
     # Determine logging level, a value between 0 and 50
@@ -1340,14 +1377,15 @@ def setup(args: argparse.Namespace) -> None:
     if not constants.WINDOWS and getattr(args, "is_global", False):
         paths.ctx.make_global()
 
-    verbose = getattr(args, "verbose", 0) - getattr(args, "quiet", 0)
+    verbose = -2 if getattr(args, "json", False) else getattr(args, "verbose", 0) - getattr(args, "quiet", 0)
 
     setup_logging(verbose)
+    paths.ctx.log_warnings()
 
     logger.debug(f"{time.strftime('%Y-%m-%d %H:%M:%S')}")
     logger.debug(f"{' '.join(sys.argv)}")
     logger.info(f"pipx version is {__version__}")
-    logger.info(f"Default python interpreter is '{DEFAULT_PYTHON}'")
+    logger.info(f"Default python interpreter is '{get_default_python()}'")
 
     mkdir(paths.ctx.venvs)
     mkdir(paths.ctx.bin_dir)
@@ -1390,12 +1428,10 @@ def setup(args: argparse.Namespace) -> None:
 
 def check_args(parsed_pipx_args: argparse.Namespace) -> None:
     if parsed_pipx_args.command == "run":
-        # we manually discard a first -- because using nargs=argparse.REMAINDER
-        #   will not do it automatically
+        # argparse.REMAINDER preserves the separator; discard it before app invocation.
         if parsed_pipx_args.app_with_args and parsed_pipx_args.app_with_args[0] == "--":
             parsed_pipx_args.app_with_args.pop(0)
-        # since we would like app to be required but not in a separate argparse
-        #   add_argument, we implement our own missing required arg error
+        # The app shares argparse.REMAINDER, so enforce its required status after parsing.
         if not parsed_pipx_args.app_with_args:
             parsed_pipx_args.subparser.error("the following arguments are required: app")
 
@@ -1410,7 +1446,7 @@ def normalize_help_command(args: list[str]) -> list[str]:
 
 def _get_subparser(parser: argparse.ArgumentParser, command: str) -> argparse.ArgumentParser:
     subparsers_action = next(action for action in parser._actions if isinstance(action, argparse._SubParsersAction))
-    return subparsers_action.choices[command]
+    return cast("argparse.ArgumentParser", subparsers_action.choices[command])
 
 
 def parse_pipx_args(parser: argparse.ArgumentParser, args: list[str]) -> argparse.Namespace:
@@ -1452,3 +1488,8 @@ def cli() -> ExitCode:
 
 if __name__ == "__main__":
     sys.exit(cli())
+
+
+__all__ = [
+    "cli",
+]

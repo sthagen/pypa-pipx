@@ -1,3 +1,4 @@
+import os
 import shutil
 import subprocess
 import sys
@@ -5,6 +6,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from pytest_mock import MockerFixture
 
 import pipx.interpreter
 import pipx.paths
@@ -19,6 +21,35 @@ from pipx.interpreter import (
 from pipx.util import PipxError
 
 original_which = shutil.which
+
+
+def test_import_defers_default_python_resolution() -> None:
+    result = subprocess.run(
+        [sys.executable, "-c", "import pipx.interpreter; print('imported')"],
+        env={**os.environ, "PIPX_DEFAULT_PYTHON": "missing-pipx-python"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert (result.returncode, result.stdout.strip()) == (0, "imported")
+
+
+def test_default_python_compatibility_attribute() -> None:
+    pipx.interpreter.get_default_python.cache_clear()
+    try:
+        assert pipx.interpreter.DEFAULT_PYTHON == pipx.interpreter.get_default_python()
+    finally:
+        pipx.interpreter.get_default_python.cache_clear()
+
+
+def test_get_default_python_resolves_configured_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    pipx.interpreter.get_default_python.cache_clear()
+    monkeypatch.setenv("PIPX_DEFAULT_PYTHON", sys.executable)
+    try:
+        assert pipx.interpreter.get_default_python() == str(Path(sys.executable).resolve())
+    finally:
+        pipx.interpreter.get_default_python.cache_clear()
 
 
 @pytest.mark.skipif(not sys.platform.startswith("win"), reason="Looks for Python.exe")
@@ -246,6 +277,45 @@ def test_fetch_missing_python(monkeypatch, mocked_github_api, fetch_python):
 def test_fetch_python_always_invalid_version_raises(monkeypatch):
     with pytest.raises(InterpreterResolutionError, match="python-build-standalone"):
         find_python_interpreter("3.0", fetch_python=FetchPythonOptions.ALWAYS)
+
+
+@pytest.mark.parametrize(
+    ("system", "machine", "libc", "expected_platform"),
+    [
+        pytest.param("Plan9", "riscv64", "", "Plan9 on riscv64", id="system"),
+        pytest.param("Linux", "aarch64", "musl", "Linux on aarch64 with musl", id="linux-libc"),
+    ],
+)
+def test_fetch_python_unsupported_platform_raises(
+    mocker: MockerFixture,
+    system: str,
+    machine: str,
+    libc: str,
+    expected_platform: str,
+) -> None:
+    mocker.patch.object(pipx.standalone_python.platform, "system", return_value=system)
+    mocker.patch.object(pipx.standalone_python.platform, "machine", return_value=machine)
+    mocker.patch.object(pipx.standalone_python.platform, "libc_ver", return_value=(libc, ""))
+
+    with pytest.raises(InterpreterResolutionError, match="python-build-standalone") as error:
+        find_python_interpreter("3.99", fetch_python=FetchPythonOptions.ALWAYS)
+    assert expected_platform in str(error.value.__cause__)
+
+
+def test_fetch_python_retries_incomplete_install(
+    mocker: MockerFixture,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    mocker.patch.object(pipx.standalone_python.platform, "system", return_value="Plan9")
+    mocker.patch.object(pipx.standalone_python.platform, "machine", return_value="riscv64")
+    install_dir = pipx.paths.ctx.standalone_python_cachedir / "3.98"
+    install_dir.mkdir(parents=True)
+
+    with pytest.raises(InterpreterResolutionError):
+        find_python_interpreter("3.98", fetch_python=FetchPythonOptions.ALWAYS)
+
+    assert not install_dir.exists()
+    assert "A previous attempt to install python 3.98 failed. Retrying." in caplog.text
 
 
 @pytest.mark.parametrize(

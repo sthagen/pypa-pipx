@@ -1,8 +1,10 @@
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest import mock
 
 import pytest
@@ -10,8 +12,12 @@ import pytest
 from helpers import app_name, run_pipx_cli, skip_if_windows, unwrap_log_text
 from package_info import PKG
 from pipx import paths, shared_libs
+from pipx.pipx_metadata_file import PipxMetadata
 from pipx.util import PipxError
 from pipx.venv import Venv
+
+if TYPE_CHECKING:
+    from pytest_mock import MockerFixture
 
 TEST_DATA_PATH = "./testdata/test_package_specifier"
 
@@ -138,6 +144,14 @@ def test_force_install(pipx_temp_env, capsys):
     assert "Installing to existing venv" in captured.out
 
 
+def test_force_install_does_not_record_internal_pip_args(pipx_temp_env: None) -> None:
+    assert run_pipx_cli(["install", PKG["pycowsay"]["spec"]]) == 0
+    assert (
+        run_pipx_cli(["install", PKG["pycowsay"]["spec"], "--force"]),
+        PipxMetadata(paths.ctx.venvs / "pycowsay").main_package.pip_args,
+    ) == (0, [])
+
+
 def test_install_no_packages_found(pipx_temp_env, capsys):
     run_pipx_cli(["install", PKG["pygdbmi"]["spec"]])
     captured = capsys.readouterr()
@@ -151,6 +165,63 @@ def test_install_same_package_twice_no_force(pipx_temp_env, capsys):
     assert "already seems to be installed" in captured.out
     assert "pipx upgrade" in captured.out
     assert "0.0.0.2" in captured.out
+
+
+def test_install_upgrade_installs_missing_package(pipx_temp_env, capsys):
+    assert not run_pipx_cli(["install", "--upgrade", PKG["black"]["spec"]])
+    captured = capsys.readouterr()
+    assert "installed package black 22.8.0" in captured.out
+
+
+def test_install_upgrade_reconciles_package_spec(pipx_temp_env, capsys):
+    assert not run_pipx_cli(["install", PKG["black"]["spec"]])
+
+    assert not run_pipx_cli(["install", "--upgrade", "--upgrade-strategy=eager", "black==22.10.0"])
+    captured = capsys.readouterr()
+    assert "upgraded package black from 22.8.0 to 22.10.0" in captured.out
+    metadata = PipxMetadata(paths.ctx.venvs / "black").main_package
+    assert metadata.package_version == "22.10.0"
+    assert metadata.pip_args == []
+
+    assert not run_pipx_cli(["install", "--upgrade", "black<22.9"])
+    captured = capsys.readouterr()
+    assert "upgraded package black from 22.10.0 to 22.8.0" in captured.out
+    assert PipxMetadata(paths.ctx.venvs / "black").main_package.package_version == "22.8.0"
+
+
+def test_install_upgrade_satisfied_spec_is_offline(pipx_temp_env, capsys, mocker: "MockerFixture"):
+    assert not run_pipx_cli(["install", PKG["black"]["spec"]])
+    check_shared = mocker.patch.object(Venv, "check_upgrade_shared_libs", autospec=True)
+    upgrade_package = mocker.patch.object(Venv, "upgrade_package", autospec=True)
+
+    assert not run_pipx_cli(["install", "--upgrade", "black>=22,<23"])
+    captured = capsys.readouterr()
+    assert "black 22.8.0 already satisfies black>=22,<23" in captured.out
+    check_shared.assert_not_called()
+    upgrade_package.assert_not_called()
+
+
+def test_install_upgrade_strategy_requires_upgrade(pipx_temp_env, capsys):
+    assert run_pipx_cli(["install", "--upgrade-strategy=eager", PKG["black"]["spec"]])
+    assert "--upgrade-strategy requires --upgrade" in capsys.readouterr().err
+
+
+def test_install_existing_package_skips_shared_lib_maintenance(pipx_temp_env: None, mocker: "MockerFixture") -> None:
+    assert run_pipx_cli(["install", PKG["pycowsay"]["spec"]]) == 0
+    mocker.patch.object(shared_libs.shared_libs, "has_been_updated_this_run", False)
+    mocker.patch(
+        "pipx.shared_libs.time.time",
+        return_value=shared_libs.shared_libs.pip_path.stat().st_mtime + shared_libs.SHARED_LIBS_MAX_AGE_SEC + 1,
+    )
+    run_subprocess = mocker.patch(
+        "pipx.shared_libs.run_subprocess",
+        autospec=True,
+        return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="ModuleSpec", stderr=""),
+    )
+
+    run_pipx_cli(["install", PKG["pycowsay"]["spec"]])
+
+    run_subprocess.assert_not_called()
 
 
 def test_include_deps(pipx_temp_env, capsys):
@@ -329,6 +400,21 @@ def test_pip_args_with_constraint_relative_path(constraint_flag, pipx_temp_env, 
     assert subprocess_package_version_output != package_version
 
 
+def test_pip_args_with_attached_constraint_records_absolute_path(
+    pipx_temp_env: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    constraint_file = tmp_path / "constraints.txt"
+    constraint_file.write_text("pycowsay==0.0.0.2")
+    monkeypatch.chdir(tmp_path)
+
+    assert (
+        run_pipx_cli(["install", "--pip-args=-cconstraints.txt", PKG["pycowsay"]["spec"]]),
+        PipxMetadata(paths.ctx.venvs / "pycowsay").main_package.pip_args[:1],
+    ) == (0, [f"-c{constraint_file}"])
+
+
 @pytest.mark.parametrize("constraint_flag", ["-c ", "--constraint ", "--constraint="])
 def test_pip_args_with_wrong_constraint_fail(constraint_flag, pipx_ultra_temp_env, tmp_path, capsys):
     constraint_file_name = "constraints.txt"
@@ -422,6 +508,14 @@ def test_force_install_changes_editable(pipx_temp_env, root, capsys):
     assert not run_pipx_cli(["install", "--editable", empty_project_path_as_string, "--force"])
     captured = capsys.readouterr()
     assert "Installing to existing venv 'empty-project'" in captured.out
+
+
+def test_install_multiple_packages_preserves_editable_for_local_package(pipx_temp_env: None, root: Path) -> None:
+    local_package = (root / "testdata" / "empty_project").as_posix()
+    assert (
+        run_pipx_cli(["install", PKG["pycowsay"]["spec"], local_package, "--editable"]),
+        PipxMetadata(paths.ctx.venvs / "empty-project").main_package.pip_args,
+    ) == (0, ["--editable"])
 
 
 def test_preinstall(pipx_temp_env, caplog):
@@ -554,3 +648,28 @@ def test_install_quiet_flag(pipx_temp_env, capsys):
     assert "These apps are now" not in captured.out
     assert "done!" not in captured.out
     assert "done!" not in captured.err
+
+
+def test_install_skip_maintenance_without_index(
+    pipx_ultra_temp_env: None,
+    capsys: pytest.CaptureFixture[str],
+    root: Path,
+    tmp_path: Path,
+) -> None:
+    wheelhouse = tmp_path / "wheelhouse"
+    wheelhouse.mkdir()
+    wheel = shutil.copy2(
+        next(
+            (root / ".pipx_tests" / "package_cache" / f"{sys.version_info.major}.{sys.version_info.minor}").glob(
+                "pycowsay-*.whl"
+            )
+        ),
+        wheelhouse,
+    )
+
+    assert not run_pipx_cli(
+        ["install", "--skip-maintenance", str(wheel), f"--pip-args=--no-index --find-links={wheelhouse}"]
+    )
+
+    assert "installed package pycowsay" in capsys.readouterr().out
+    assert not shared_libs.shared_libs_auto_upgrade_disabled()

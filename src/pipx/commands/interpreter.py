@@ -1,6 +1,7 @@
 import logging
 import subprocess
 from pathlib import Path
+from typing import Final
 
 from packaging import version
 
@@ -10,7 +11,7 @@ from pipx.pipx_metadata_file import PipxMetadata
 from pipx.util import is_paths_relative, rmdir
 from pipx.venv import Venv, VenvContainer
 
-logger = logging.getLogger(__name__)
+_LOGGER: Final[logging.Logger] = logging.getLogger(__name__)
 
 
 def get_installed_standalone_interpreters() -> list[Path]:
@@ -37,7 +38,7 @@ def get_interpreter_users(interpreter: Path, venvs: list[Venv]) -> list[PipxMeta
 
 def list_interpreters(
     venv_container: VenvContainer,
-):
+) -> constants.ExitCode:
     interpreters = get_installed_standalone_interpreters()
     venvs = get_venvs_using_standalone_interpreter(venv_container)
     output: list[str] = []
@@ -57,7 +58,7 @@ def list_interpreters(
 
 def prune_interpreters(
     venv_container: VenvContainer,
-):
+) -> constants.ExitCode:
     interpreters = get_installed_standalone_interpreters()
     venvs = get_venvs_using_standalone_interpreter(venv_container)
     removed = []
@@ -84,7 +85,7 @@ def get_latest_micro_version(
     return current_version
 
 
-def upgrade_interpreters(venv_container: VenvContainer, verbose: bool):
+def upgrade_interpreters(venv_container: VenvContainer, verbose: bool) -> constants.ExitCode:
     with animate("Getting the index of the latest standalone python builds", not verbose):
         latest_pythons = standalone_python.list_pythons(use_cache=False)
 
@@ -93,24 +94,25 @@ def upgrade_interpreters(venv_container: VenvContainer, verbose: bool):
         try:
             parsed_latest_python_versions.append(version.parse(latest_python_version))
         except version.InvalidVersion:
-            logger.info(f"Invalid version found in latest pythons: {latest_python_version}. Skipping.")
+            _LOGGER.info(f"Invalid version found in latest pythons: {latest_python_version}. Skipping.")
 
     upgraded = []
+    venvs: list[Venv] | None = None
 
     for interpreter_dir in paths.ctx.standalone_python_cachedir.iterdir():
         if not interpreter_dir.is_dir():
             continue
 
         interpreter_python = interpreter_dir / "python.exe" if constants.WINDOWS else interpreter_dir / "bin" / "python3"
-        interpreter_full_version = (
-            subprocess.run([str(interpreter_python), "--version"], stdout=subprocess.PIPE, check=True, text=True)
-            .stdout.strip()
-            .split()[1]
-        )
         try:
+            interpreter_full_version = (
+                subprocess.run([str(interpreter_python), "--version"], stdout=subprocess.PIPE, check=True, text=True)
+                .stdout.removeprefix("Python ")
+                .strip()
+            )
             parsed_interpreter_full_version = version.parse(interpreter_full_version)
-        except version.InvalidVersion:
-            logger.info(f"Invalid version found in interpreter at {interpreter_dir}. Skipping.")
+        except (OSError, subprocess.CalledProcessError, version.InvalidVersion):
+            _LOGGER.info(f"Cannot read the interpreter version at {interpreter_dir}. Skipping.")
             continue
         latest_micro_version = get_latest_micro_version(parsed_interpreter_full_version, parsed_latest_python_versions)
         if latest_micro_version > parsed_interpreter_full_version:
@@ -119,8 +121,9 @@ def upgrade_interpreters(venv_container: VenvContainer, verbose: bool):
                 override=True,
             )
 
-            for venv_dir in venv_container.iter_venv_dirs():
-                venv = Venv(venv_dir)
+            if venvs is None:
+                venvs = get_venvs_using_standalone_interpreter(venv_container)
+            for venv in venvs:
                 if venv.pipx_metadata.source_interpreter is not None and is_paths_relative(
                     venv.pipx_metadata.source_interpreter, interpreter_dir
                 ):
@@ -128,7 +131,7 @@ def upgrade_interpreters(venv_container: VenvContainer, verbose: bool):
                         f"Upgrade the interpreter of {venv.name} from {interpreter_full_version} to {latest_micro_version}"
                     )
                     commands.reinstall(
-                        venv_dir=venv_dir,
+                        venv_dir=venv.root,
                         local_bin_dir=paths.ctx.bin_dir,
                         local_man_dir=paths.ctx.man_dir,
                         python=str(interpreter_python),
@@ -145,3 +148,10 @@ def upgrade_interpreters(venv_container: VenvContainer, verbose: bool):
 
     # Any failure to upgrade will raise PipxError, otherwise success
     return constants.EXIT_CODE_OK
+
+
+__all__ = [
+    "list_interpreters",
+    "prune_interpreters",
+    "upgrade_interpreters",
+]
