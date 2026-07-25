@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
+from io import BytesIO, StringIO, TextIOWrapper
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 import pytest
 
+from helpers import skip_if_windows
 from pipx import paths
 from pipx.util import exec_app, rmdir, run_subprocess, safe_unlink
 
 if TYPE_CHECKING:
+    import subprocess
+
+    from _pytest.capture import CaptureResult
     from pytest_mock import MockerFixture
 
 
@@ -47,7 +53,8 @@ def test_rmdir_without_safe_rm_is_non_fatal_for_locked_files(
     def fake_rmtree(path: Path, ignore_errors: bool = False) -> None:
         assert path == trash_dir
         if not ignore_errors:
-            raise PermissionError("locked file")
+            msg = "locked file"
+            raise PermissionError(msg)
 
     monkeypatch.setattr("pipx.util.shutil.rmtree", fake_rmtree)
 
@@ -121,8 +128,137 @@ def test_subprocess_keyring_provider(monkeypatch: pytest.MonkeyPatch, env_value:
 
 def test_subprocess_pythonsafepath_set_for_python_commands() -> None:
     """Test that PYTHONSAFEPATH is set for Python subprocess calls to prevent CWD shadowing (issue #1575)."""
-    result = run_subprocess(
-        [sys.executable, "-c", "import os, sys; sys.stdout.write(os.environ.get('PYTHONSAFEPATH', ''))"]
-    )
+    result = run_subprocess([
+        sys.executable,
+        "-c",
+        "import os, sys; sys.stdout.write(os.environ.get('PYTHONSAFEPATH', ''))",
+    ])
 
     assert result.stdout == "1"
+
+
+def test_subprocess_streams_and_captures_output(capsys: pytest.CaptureFixture[str]) -> None:
+    result: Final[subprocess.CompletedProcess[str]] = run_subprocess(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; sys.stdout.buffer.write('stdøut 1\\rstdøut 2\\r'.encode()); sys.stdout.flush(); "
+                "sys.stderr.buffer.write('stdërr 1\\rstdërr 2\\r\\n'.encode()); sys.stderr.flush()"
+            ),
+        ],
+        stream_output=True,
+    )
+
+    captured: Final[CaptureResult[str]] = capsys.readouterr()
+    assert (captured.out, captured.err, result.stdout, result.stderr) == (
+        "stdøut 1\rstdøut 2\r",
+        "stdërr 1\rstdërr 2\n",
+        "stdøut 1\rstdøut 2\r",
+        "stdërr 1\rstdërr 2\n",
+    )
+
+
+@pytest.mark.parametrize(
+    ("stdout_is_a_terminal", "expected"),
+    [
+        pytest.param(True, "1 120", id="terminal"),
+        pytest.param(False, "unset unset", id="pipe"),
+    ],
+)
+def test_subprocess_stream_reports_the_terminal_to_the_child(
+    mocker: MockerFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    stdout_is_a_terminal: bool,
+    expected: str,
+) -> None:
+    monkeypatch.delenv("TTY_COMPATIBLE", raising=False)
+    monkeypatch.delenv("COLUMNS", raising=False)
+    mocker.patch("pipx.util.sys.stdout.isatty", return_value=stdout_is_a_terminal)
+    mocker.patch("pipx.util.shutil.get_terminal_size", return_value=os.terminal_size((120, 40)))
+    result: Final[subprocess.CompletedProcess[str]] = run_subprocess(
+        [
+            sys.executable,
+            "-c",
+            "import os; print(os.environ.get('TTY_COMPATIBLE', 'unset'), os.environ.get('COLUMNS', 'unset'))",
+        ],
+        stream_output=True,
+    )
+
+    assert result.stdout.strip() == expected
+
+
+@skip_if_windows
+def test_subprocess_stream_hands_a_terminal_to_the_child(mocker: MockerFixture) -> None:
+    destination: Final[StringIO] = StringIO()
+    mocker.patch.object(destination, "isatty", return_value=True)
+    mocker.patch("pipx.util.sys.stdout", destination)
+    result: Final[subprocess.CompletedProcess[str]] = run_subprocess(
+        [sys.executable, "-c", "import sys; print(sys.stdout.isatty())"],
+        capture_stderr=False,
+        stream_output=True,
+    )
+
+    assert result.stdout.strip() == "True"
+
+
+def test_subprocess_stream_leaves_a_pipe_to_the_child_without_a_terminal(mocker: MockerFixture) -> None:
+    destination: Final[StringIO] = StringIO()
+    mocker.patch("pipx.util.sys.stdout", destination)
+    result: Final[subprocess.CompletedProcess[str]] = run_subprocess(
+        [sys.executable, "-c", "import sys; print(sys.stdout.isatty())"],
+        capture_stderr=False,
+        stream_output=True,
+    )
+
+    assert result.stdout.strip() == "False"
+
+
+def test_subprocess_stream_normalizes_split_crlf(mocker: MockerFixture) -> None:
+    destination: Final[StringIO] = StringIO()
+    mocker.patch("pipx.util.sys.stdout", destination)
+    read_size: Final[int] = 8 * 1024
+    result: Final[subprocess.CompletedProcess[str]] = run_subprocess(
+        [
+            sys.executable,
+            "-c",
+            f"import os, sys; os.write(sys.stdout.fileno(), b'x' * {read_size - 1} + b'\\r\\n')",
+        ],
+        capture_stderr=False,
+        stream_output=True,
+    )
+    expected: Final[str] = "x" * (read_size - 1) + "\n"
+
+    assert (destination.getvalue(), result.stdout) == (expected, expected)
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        pytest.param("print('stdout')", id="stdout"),
+        pytest.param("print('stderr', file=sys.stderr)", id="stderr"),
+    ],
+)
+def test_subprocess_stream_does_not_log_capture(
+    caplog: pytest.LogCaptureFixture,
+    statement: str,
+) -> None:
+    with caplog.at_level(logging.DEBUG, logger="pipx.util"):
+        run_subprocess(
+            [sys.executable, "-c", f"import sys; {statement}"],
+            stream_output=True,
+        )
+
+    assert [record.getMessage() for record in caplog.records if record.levelno == logging.DEBUG] == ["returncode: 0"]
+
+
+def test_subprocess_stream_drains_before_output_error(mocker: MockerFixture) -> None:
+    destination: Final[TextIOWrapper] = TextIOWrapper(BytesIO(), encoding="ascii")
+    mocker.patch("pipx.util.sys.stdout", destination)
+
+    with pytest.raises(UnicodeEncodeError):
+        run_subprocess(
+            [sys.executable, "-c", "print('ø' * 100_000)"],
+            capture_stderr=False,
+            stream_output=True,
+        )

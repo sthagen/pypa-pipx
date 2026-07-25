@@ -1,7 +1,8 @@
+from __future__ import annotations
+
 import os
-from collections.abc import Callable
 from functools import cache
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from pipx import paths
 from pipx.backends import env_default_backend, find_uv_binary, resolve_backend_name
@@ -14,13 +15,18 @@ from pipx.shared_libs import (
 )
 from pipx.util import PipxError
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 ENVIRONMENT_VARIABLES: Final = [
     "PIPX_HOME",
     "PIPX_GLOBAL_HOME",
     "PIPX_BIN_DIR",
     "PIPX_GLOBAL_BIN_DIR",
     "PIPX_MAN_DIR",
+    "PIPX_COMPLETION_DIR",
     "PIPX_GLOBAL_MAN_DIR",
+    "PIPX_GLOBAL_COMPLETION_DIR",
     "PIPX_SHARED_LIBS",
     "PIPX_DEFAULT_PYTHON",
     "PIPX_DEFAULT_BACKEND",
@@ -28,7 +34,6 @@ ENVIRONMENT_VARIABLES: Final = [
     "PIPX_FETCH_PYTHON",
     DISABLE_SHARED_LIBS_AUTO_UPGRADE,
     "PIPX_USE_EMOJI",
-    "PIPX_HOME_ALLOW_SPACE",
 ]
 DERIVED_ENVIRONMENT_VARIABLES: Final = [
     "PIPX_LOCAL_VENVS",
@@ -53,6 +58,7 @@ def _get_derived_values() -> dict[str, Callable[[], object]]:
         "PIPX_HOME": lambda: paths.ctx.home,
         "PIPX_BIN_DIR": lambda: paths.ctx.bin_dir,
         "PIPX_MAN_DIR": lambda: paths.ctx.man_dir,
+        "PIPX_COMPLETION_DIR": lambda: paths.ctx.completion_dir,
         "PIPX_SHARED_LIBS": lambda: paths.ctx.shared_libs,
         "PIPX_LOCAL_VENVS": lambda: paths.ctx.venvs,
         "PIPX_LOG_DIR": lambda: paths.ctx.logs,
@@ -66,7 +72,6 @@ def _get_derived_values() -> dict[str, Callable[[], object]]:
         "UV_CACHE_DIR": lambda: os.environ.get("UV_CACHE_DIR", ""),
         DISABLE_SHARED_LIBS_AUTO_UPGRADE: lambda: str(shared_libs_auto_upgrade_disabled()).lower(),
         "PIPX_USE_EMOJI": lambda: str(EMOJI_SUPPORT).lower(),
-        "PIPX_HOME_ALLOW_SPACE": lambda: str(paths.ctx.allow_spaces_in_home_path).lower(),
     }
 
 
@@ -74,22 +79,22 @@ def environment(value: str | None) -> ExitCode:
     """Print a list of environment variables and paths used by pipx"""
     derived_values = _get_derived_values()
     if value is None:
-        print("Environment variables (set by user):")
-        print("")
+        print("Environment variables (set by user):")  # ruff:ignore[print]  # user-facing CLI output
+        print()  # ruff:ignore[print]
         for env_variable in ENVIRONMENT_VARIABLES:
-            env_value = os.getenv(env_variable, "")
-            print(f"{env_variable}={env_value}")
-        print("")
-        print("Derived values (computed by pipx):")
-        print("")
+            print(f"{env_variable}={os.getenv(env_variable, '')}")  # ruff:ignore[print]
+        print()  # ruff:ignore[print]
+        print("Derived values (computed by pipx):")  # ruff:ignore[print]
+        print()  # ruff:ignore[print]
         for env_variable, resolve_derived_value in derived_values.items():
-            print(f"{env_variable}={resolve_derived_value()}")
+            print(f"{env_variable}={resolve_derived_value()}")  # ruff:ignore[print]
     elif (get_derived_value := derived_values.get(value)) is not None:
-        print(get_derived_value())
+        print(get_derived_value())  # ruff:ignore[print]
     elif value in ENVIRONMENT_VARIABLES:
-        print(os.getenv(value, ""))
+        print(os.getenv(value, ""))  # ruff:ignore[print]
     else:
-        raise PipxError("Variable not found.")
+        msg = "Variable not found."
+        raise PipxError(msg)
 
     return EXIT_CODE_OK
 

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, Final, TypedDict
 
 import pytest
 
@@ -11,20 +12,26 @@ from pipx.backends import (
     KNOWN_BACKENDS,
     PIP,
     UV,
+    OutdatedPackage,
     assert_not_pip_under_uv,
     env_default_backend,
     find_uv_binary,
     resolve_backend_name,
 )
-from pipx.backends.uv import UvBackend
+from pipx.backends.pip import PipBackend
+from pipx.backends.uv import UvBackend, resolve_uv_binary
 from pipx.commands.run_uv import translate_pip_args_for_uv
 from pipx.constants import PIPX_SHARED_PTH
-from pipx.main import _validate_backend_available
+from pipx.main import (
+    _validate_backend_available,  # ruff:ignore[import-private-name]  # test exercises private helper, no public API
+)
 from pipx.util import PipxError
 from pipx.venv import Venv, reset_backend_override_warnings
 from pipx.venv_inspect import list_not_required_packages
 
 if TYPE_CHECKING:
+    from unittest.mock import MagicMock
+
     from pytest_mock import MockerFixture
 
 
@@ -152,7 +159,7 @@ def test_resolve_backend_name_auto_disabled(mocker: MockerFixture) -> None:
 def test_find_uv_binary_prefers_bundled(mocker: MockerFixture, tmp_path: Path) -> None:
     bundled = tmp_path / "bundled-uv"
     bundled.write_text("")
-    mocker.patch("pipx.backends.uv._FIND_UV_BIN_FROM_EXTRA", lambda: str(bundled))
+    mocker.patch("pipx.backends.uv._FIND_UV_BIN_FROM_EXTRA", return_value=str(bundled))
     mocker.patch("shutil.which", return_value="/usr/local/bin/uv")
     # Stub bundled isn't a real uv, so bypass the launch probe.
     mocker.patch("pipx.backends.uv._binary_runs", return_value=True)
@@ -164,8 +171,8 @@ def test_find_uv_binary_prefers_bundled(mocker: MockerFixture, tmp_path: Path) -
 def test_find_uv_binary_skips_broken_bundled(mocker: MockerFixture, tmp_path: Path) -> None:
     bundled = tmp_path / "bundled-uv"
     bundled.write_text("")
-    mocker.patch("pipx.backends.uv._FIND_UV_BIN_FROM_EXTRA", lambda: str(bundled))
-    mocker.patch("pipx.backends.uv._binary_runs", return_value=False)
+    mocker.patch("pipx.backends.uv._FIND_UV_BIN_FROM_EXTRA", return_value=str(bundled))
+    mocker.patch("pipx.backends.uv._binary_runs", side_effect=lambda candidate: candidate != bundled)
     mocker.patch("shutil.which", return_value="/usr/local/bin/uv")
     binary, source = find_uv_binary()
     assert binary == Path("/usr/local/bin/uv")
@@ -174,10 +181,32 @@ def test_find_uv_binary_skips_broken_bundled(mocker: MockerFixture, tmp_path: Pa
 
 def test_find_uv_binary_falls_back_to_path(mocker: MockerFixture) -> None:
     mocker.patch("pipx.backends.uv._FIND_UV_BIN_FROM_EXTRA", None)
+    mocker.patch("pipx.backends.uv._binary_runs", return_value=True)
     mocker.patch("shutil.which", return_value="/usr/local/bin/uv")
     binary, source = find_uv_binary()
     assert binary == Path("/usr/local/bin/uv")
     assert source == "path"
+
+
+def test_find_uv_binary_skips_broken_path(mocker: MockerFixture) -> None:
+    mocker.patch("pipx.backends.uv._FIND_UV_BIN_FROM_EXTRA", None)
+    mocker.patch("pipx.backends.uv._binary_runs", return_value=False)
+    mocker.patch("shutil.which", return_value="/usr/local/bin/uv")
+    binary, source = find_uv_binary()
+    assert binary is None
+    assert source == "missing"
+
+
+def test_find_uv_binary_probe_survives_a_hanging_path_uv(mocker: MockerFixture) -> None:
+    mocker.patch("pipx.backends.uv._FIND_UV_BIN_FROM_EXTRA", None)
+    mocker.patch("shutil.which", return_value="/usr/local/bin/uv")
+    mocker.patch(
+        "pipx.backends.uv.subprocess.run",
+        side_effect=subprocess.TimeoutExpired(cmd=["uv", "--version"], timeout=10),
+    )
+    binary, source = find_uv_binary()
+    assert binary is None
+    assert source == "missing"
 
 
 def test_find_uv_binary_missing(mocker: MockerFixture) -> None:
@@ -193,11 +222,163 @@ def test_find_uv_binary_is_cached(mocker: MockerFixture) -> None:
     # must not rely on the autouse fixture's reset already having run.
     find_uv_binary.cache_clear()
     mocker.patch("pipx.backends.uv._FIND_UV_BIN_FROM_EXTRA", None)
+    mocker.patch("pipx.backends.uv._binary_runs", return_value=True)
     which_mock = mocker.patch("shutil.which", return_value="/usr/local/bin/uv")
     find_uv_binary()
     find_uv_binary()
     find_uv_binary()
     assert which_mock.call_count == 1
+
+
+def test_resolve_uv_binary_reports_a_hanging_version_probe(mocker: MockerFixture) -> None:
+    binary: Final[Path] = Path("/usr/local/bin/uv")
+    mocker.patch("pipx.backends.uv.find_uv_binary", return_value=(binary, "path"))
+    mocker.patch(
+        "pipx.backends.uv.subprocess.run",
+        side_effect=subprocess.TimeoutExpired(cmd=[str(binary), "--version"], timeout=10),
+    )
+
+    with pytest.raises(PipxError, match="Could not run"):
+        resolve_uv_binary()
+
+
+def test_uv_backend_rejects_pre_cooldown_version(mocker: MockerFixture) -> None:
+    binary: Final[Path] = Path("/usr/local/bin/uv")
+    mocker.patch("pipx.backends.uv.resolve_uv_binary", return_value=binary)
+    mocker.patch("pipx.backends.uv.find_uv_binary", return_value=(binary, "path"))
+    mocker.patch(
+        "pipx.backends.uv.subprocess.run",
+        return_value=subprocess.CompletedProcess([str(binary), "--version"], 0, stdout="uv 0.9.16", stderr=""),
+    )
+
+    with pytest.raises(PipxError, match=r"uv>=0\.9\.17"):
+        UvBackend()
+
+
+@pytest.mark.parametrize("backend_name", [pytest.param(PIP, id="pip"), pytest.param(UV, id="uv")])
+def test_backend_verbose_install_streams_output(backend_name: str, tmp_path: Path, mocker: MockerFixture) -> None:
+    binary: Final[Path] = tmp_path / "uv"
+    mocker.patch("pipx.backends.uv.resolve_uv_binary", return_value=binary)
+    mocker.patch("pipx.backends.uv.find_uv_binary", return_value=(binary, "path"))
+    mocker.patch(
+        "pipx.backends.uv.subprocess.run",
+        return_value=subprocess.CompletedProcess([str(binary), "--version"], 0, stdout="uv 0.11.28", stderr=""),
+    )
+    run_subprocess: Final[MagicMock] = mocker.patch(
+        f"pipx.backends.{backend_name}.run_subprocess",
+        autospec=True,
+        return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+    )
+    venv_python: Final[Path] = tmp_path / "bin" / "python"
+
+    (UvBackend() if backend_name == UV else PipBackend()).install(
+        venv_root=tmp_path,
+        venv_python=venv_python,
+        requirements=["demo"],
+        pip_args=[],
+        verbose=True,
+    )
+
+    expected_command: Final[list[str | Path]] = (
+        [str(venv_python), "-m", "pip", "--no-input", "install", "--progress-bar=on", "demo"]
+        if backend_name == PIP
+        else [binary, "pip", "install", "--python", str(venv_python), "--verbose", "demo"]
+    )
+    assert (run_subprocess.call_args.args[0], run_subprocess.call_args.kwargs["stream_output"]) == (
+        expected_command,
+        True,
+    )
+
+
+@pytest.mark.parametrize(
+    ("backend_name", "progress", "flags", "streams"),
+    [
+        pytest.param(PIP, True, ["--progress-bar=on"], True, id="pip-progress"),
+        pytest.param(PIP, False, [], False, id="pip-plain"),
+        # uv hides its bar under --verbose and under --quiet, so progress mode passes neither
+        pytest.param(UV, True, [], True, id="uv-progress"),
+        pytest.param(UV, False, ["--quiet"], False, id="uv-plain"),
+    ],
+)
+def test_backend_install_draws_progress_without_verbose(  # ruff:ignore[too-many-positional-arguments]  # pytest injects fixtures by name
+    backend_name: str,
+    progress: bool,
+    flags: list[str],
+    streams: bool,
+    tmp_path: Path,
+    mocker: MockerFixture,
+) -> None:
+    binary: Final[Path] = tmp_path / "uv"
+    mocker.patch("pipx.backends.uv.resolve_uv_binary", return_value=binary)
+    mocker.patch("pipx.backends.uv.find_uv_binary", return_value=(binary, "path"))
+    mocker.patch(
+        "pipx.backends.uv.subprocess.run",
+        return_value=subprocess.CompletedProcess([str(binary), "--version"], 0, stdout="uv 0.11.28", stderr=""),
+    )
+    run_subprocess: Final[MagicMock] = mocker.patch(
+        f"pipx.backends.{backend_name}.run_subprocess",
+        autospec=True,
+        return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+    )
+    venv_python: Final[Path] = tmp_path / "bin" / "python"
+
+    (UvBackend() if backend_name == UV else PipBackend()).install(
+        venv_root=tmp_path,
+        venv_python=venv_python,
+        requirements=["demo"],
+        pip_args=[],
+        progress=progress,
+    )
+
+    expected_command: Final[list[str | Path]] = (
+        [str(venv_python), "-m", "pip", "--no-input", "install", *flags, "demo"]
+        if backend_name == PIP
+        else [binary, "pip", "install", "--python", str(venv_python), *flags, "demo"]
+    )
+    assert (run_subprocess.call_args.args[0], run_subprocess.call_args.kwargs["stream_output"]) == (
+        expected_command,
+        streams,
+    )
+
+
+@pytest.mark.parametrize(
+    ("progress", "expected_no_progress"),
+    [
+        pytest.param(True, None, id="progress-leaves-user-env"),
+        pytest.param(False, "1", id="quiet-silences-uv-bar"),
+    ],
+)
+def test_uv_install_gates_progress_bar_via_env(
+    progress: bool,
+    expected_no_progress: str | None,
+    tmp_path: Path,
+    mocker: MockerFixture,
+) -> None:
+    binary: Final[Path] = tmp_path / "uv"
+    mocker.patch("pipx.backends.uv.resolve_uv_binary", return_value=binary)
+    mocker.patch("pipx.backends.uv.find_uv_binary", return_value=(binary, "path"))
+    mocker.patch(
+        "pipx.backends.uv.subprocess.run",
+        return_value=subprocess.CompletedProcess([str(binary), "--version"], 0, stdout="uv 0.11.28", stderr=""),
+    )
+    run_subprocess: Final[MagicMock] = mocker.patch(
+        "pipx.backends.uv.run_subprocess",
+        autospec=True,
+        return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+    )
+
+    UvBackend().install(
+        venv_root=tmp_path,
+        venv_python=tmp_path / "bin" / "python",
+        requirements=["demo"],
+        pip_args=[],
+        progress=progress,
+    )
+
+    assert run_subprocess.call_args.kwargs["env_overrides"] == {
+        "VIRTUAL_ENV": None,
+        **({"UV_NO_PROGRESS": expected_no_progress} if expected_no_progress is not None else {}),
+    }
 
 
 @pytest.mark.parametrize(
@@ -289,24 +470,106 @@ def test_uv_list_installed_not_required_uses_distribution_metadata(
     _write_dist_info(site_packages, "top-package", ["child-package>=1"])
     _write_dist_info(site_packages, "child-package")
 
-    def fail_run_subprocess(*args: object, **kwargs: object) -> None:
+    def fail_run_subprocess(*_args: object, **_kwargs: object) -> None:
         pytest.fail("uv pip list should not be invoked with --not-required")
 
     monkeypatch.setattr("pipx.backends.uv.run_subprocess", fail_run_subprocess)
     monkeypatch.setattr(
         "pipx.venv_inspect.fetch_info_in_venv",
-        lambda venv_python: ([str(site_packages)], {}, "Python 3.13.0"),
+        lambda _venv_python: ([str(site_packages)], {}, "Python 3.13.0"),
         raising=False,
     )
 
     backend = UvBackend.__new__(UvBackend)
-    backend._binary = tmp_path / "uv"
+    backend._binary = tmp_path / "uv"  # ruff:ignore[private-member-access]  # constructing backend bypasses __init__ to isolate list_installed
 
     assert backend.list_installed(
         venv_root=tmp_path,
         venv_python=tmp_path / "bin" / "python",
         not_required=True,
     ) == {"root-package", "top-package"}
+
+
+@pytest.mark.parametrize("backend_name", [pytest.param(PIP, id="pip"), pytest.param(UV, id="uv")])
+def test_backend_list_outdated_forwards_index_settings(
+    backend_name: str, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    backend: PipBackend | UvBackend
+    if backend_name == PIP:
+        backend = PipBackend()
+        expected_command: list[str | Path] = [
+            str(tmp_path / "bin" / "python"),
+            "-m",
+            "pip",
+            "list",
+            "--outdated",
+            "--format=json",
+            "--index-url",
+            "https://index.example/simple",
+        ]
+    else:
+        mocker.patch(
+            "pipx.backends.uv.find_uv_binary",
+            autospec=True,
+            return_value=(tmp_path / "uv", "path"),
+        )
+        mocker.patch(
+            "pipx.backends.uv.subprocess.run",
+            autospec=True,
+            return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="uv 0.10.0", stderr=""),
+        )
+        backend = UvBackend()
+        expected_command = [
+            tmp_path / "uv",
+            "pip",
+            "list",
+            "--python",
+            str(tmp_path / "bin" / "python"),
+            "--quiet",
+            "--outdated",
+            "--format=json",
+            "--index-url",
+            "https://index.example/simple",
+        ]
+    run_subprocess = mocker.patch(
+        f"pipx.backends.{'pip' if backend_name == PIP else 'uv'}.run_subprocess",
+        autospec=True,
+        return_value=subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout='[{"name":"demo","version":"1","latest_version":"2"}]',
+            stderr="",
+        ),
+    )
+
+    result = backend.list_outdated(
+        venv_root=tmp_path,
+        venv_python=tmp_path / "bin" / "python",
+        index_args=["--index-url", "https://index.example/simple"],
+    )
+
+    assert (result, run_subprocess.call_args.args[0]) == (
+        (OutdatedPackage(name="demo", version="1", latest_version="2"),),
+        expected_command,
+    )
+
+
+@pytest.mark.parametrize(
+    ("backend_type", "expected"),
+    [
+        pytest.param(PipBackend, "--uploaded-prior-to", id="pip"),
+        pytest.param(UvBackend, "--exclude-newer", id="uv"),
+    ],
+)
+def test_backend_cooldown_args(
+    backend_type: type[PipBackend | UvBackend],
+    expected: str,
+) -> None:
+    assert (
+        backend_type.cooldown_args(None),
+        backend_type.cooldown_args(0),
+        backend_type.cooldown_args(7),
+    ) == ([], [], [expected, "P7D"])
 
 
 def test_list_not_required_packages_treats_extra_dependencies_as_required(
@@ -321,7 +584,7 @@ def test_list_not_required_packages_treats_extra_dependencies_as_required(
 
     monkeypatch.setattr(
         "pipx.venv_inspect.fetch_info_in_venv",
-        lambda venv_python: ([str(site_packages)], {}, "Python 3.13.0"),
+        lambda _venv_python: ([str(site_packages)], {}, "Python 3.13.0"),
         raising=False,
     )
 
