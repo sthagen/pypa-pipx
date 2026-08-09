@@ -1,4 +1,13 @@
 repos:
+  - repo: local
+    hooks:
+      # towncrier orphan fragments (+name) and typos in the type render without a PR link or get silently
+      # dropped from the changelog, so enforce the <PR number>.<type>.md naming here
+      - id: changelog-fragment-naming
+        name: changelog fragments are named <PR number>.<type>.md
+        language: fail
+        entry: changelog.d entries must be named <PR number>.(feature|bugfix|performance|doc|removal|misc).md
+        files: ^changelog\.d/(?!\.gitignore$)(?!\d+\.(feature|bugfix|performance|doc|removal|misc)(\.\d+)?\.md$)
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
@@ -25,11 +34,11 @@ repos:
           - mdformat-front-matters
         exclude: ^(docs/changelog\.md|testdata)
   - repo: https://github.com/tox-dev/pyproject-fmt
-    rev: v2.25.3
+    rev: v2.26.0
     hooks:
       - id: pyproject-fmt
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.22
+    rev: v0.16.1
     hooks:
       - id: ruff-check
         args: ["--fix", "--unsafe-fixes", "--show-fixes", "--exit-non-zero-on-fix"]

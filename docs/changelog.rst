@@ -14,6 +14,65 @@ to this file.
 
 .. towncrier release notes start
 
+`1.16.6 <https://github.com/pypa/pipx/tree/1.16.6>`_ - 2026-08-04
+=================================================================
+
+Bugfixes
+--------
+
+- Stop appending a second `.exe` on Windows to the app name `pipx run` infers. (:issue:`1189`)
+- Run the console script a package declares when `pipx run` infers the app name from a VCS URL, a local path, or a name it
+  normalized, instead of passing a guess to `uv tool run`. Reusing that venv no longer reinstalls the package on every
+  run. (:issue:`1994`)
+
+
+`1.16.5 <https://github.com/pypa/pipx/tree/1.16.5>`_ - 2026-07-29
+=================================================================
+
+Bugfixes
+--------
+
+- Honor the version specifier when `pipx upgrade --install` installs a missing package. (:issue:`1987`)
+
+
+`1.16.4 <https://github.com/pypa/pipx/tree/1.16.4>`_ - 2026-07-29
+=================================================================
+
+Bugfixes
+--------
+
+- Bundle `colorama` and `tomli` in the zipapp so the single `pipx.pyz` works on Windows and on Python 3.10. (:issue:`1978`, :issue:`1984`)
+- Fix the Release Notes link published in package metadata. (:issue:`1980`)
+- `PIPX_MAX_LOGS=0` now prunes the log files instead of keeping all of them. (:issue:`1988`)
+
+
+Improved Documentation
+----------------------
+
+- Fix the documentation links that 404 after the Sphinx move, including the PyPI Release Notes link. (:issue:`1980`)
+
+
+Miscellaneous internal changes
+------------------------------
+
+- :issue:`1989`
+
+
+`1.16.3 <https://github.com/pypa/pipx/tree/1.16.3>`_ - 2026-07-26
+=================================================================
+
+Bugfixes
+--------
+
+- Allow read-only global list commands when venv lock files are inaccessible. (:issue:`1974`)
+
+
+Improved Documentation
+----------------------
+
+- Direct Linux users to PEP 668-compatible installation methods. (:issue:`1976`)
+
+
 `1.16.2 <https://github.com/pypa/pipx/tree/1.16.2>`_ - 2026-07-21
 =================================================================
 
