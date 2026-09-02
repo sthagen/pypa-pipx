@@ -8,6 +8,9 @@ import shutil
 import subprocess
 import sys
 import textwrap
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
 from typing import TYPE_CHECKING, Final
 from unittest import mock
 
@@ -15,7 +18,7 @@ import pytest
 from filelock import AcquireReturnProxy, FileLock, Timeout
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Iterator, Mapping, Sequence
     from pathlib import Path
 
     from pytest_mock import MockerFixture
@@ -85,6 +88,67 @@ def test_run_normalized_name_skips_uv_tool_run(caplog: pytest.LogCaptureFixture)
     # `uv tool run PyCowSay` would look for a `PyCowSay` script; only the venv path knows what the package installed
     run_pipx_cli_exit(["run", "--backend", "uv", "PyCowSay", "cowsay", "hi"], assert_exit=0)
 
+    assert f"exec_app: {paths.ctx.venv_cache}" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "spec_args",
+    [
+        pytest.param([], id="package-name"),
+        pytest.param(["--spec", "pycowsay"], id="explicit-spec"),
+    ],
+)
+@pytest.mark.usefixtures("pipx_temp_env")
+def test_run_matching_name_uses_uv_tool_run(mocker: MockerFixture, spec_args: list[str]) -> None:
+    # patch the handover rather than os.execvpe, which exec_app calls on POSIX only
+    exec_app: Final = mocker.patch("pipx.commands.run_uv.exec_app", autospec=True, side_effect=SystemExit(0))
+
+    run_pipx_cli_exit(["run", "--backend", "uv", *spec_args, "pycowsay", "cowsay", "hi"], assert_exit=0)
+
+    exec_app.assert_called_once()
+    assert exec_app.call_args.args[0][1:3] == ["tool", "run"]
+
+
+@pytest.mark.parametrize(
+    "spec_template",
+    [
+        pytest.param("{path}", id="local-path"),
+        pytest.param("empty-project @ {uri}", id="direct-reference"),
+    ],
+)
+@pytest.mark.usefixtures("pipx_temp_env")
+@mock.patch("os.execvpe", new=execvpe_mock)
+def test_run_spec_honors_dotted_pipx_run_entry_point(
+    empty_project: Path,
+    caplog: pytest.LogCaptureFixture,
+    spec_template: str,
+) -> None:
+    pyproject: Final[Path] = empty_project / "pyproject.toml"
+    pyproject.write_text(
+        pyproject
+        .read_text(encoding="utf-8")
+        .replace('scripts.empty-project = "empty_project.main:cli"', "")
+        .replace(
+            'entry-points."pipx.run".empty-project = "empty_project.main:cli"',
+            'entry-points."pipx.run"."empty.project" = "empty_project.main:main"',
+        ),
+        encoding="utf-8",
+    )
+    caplog.set_level(logging.INFO)
+
+    run_pipx_cli_exit(
+        [
+            "run",
+            "--backend",
+            "uv",
+            "--spec",
+            spec_template.format(path=empty_project, uri=empty_project.as_uri()),
+            "empty.project",
+        ],
+        assert_exit=0,
+    )
+
+    assert "Using discovered entry point for 'pipx run'" in caplog.text
     assert f"exec_app: {paths.ctx.venv_cache}" in caplog.text
 
 
@@ -333,18 +397,27 @@ def test_cache_sweep_ignores_tag(
 
 @pytest.mark.usefixtures("pipx_temp_env")
 @mock.patch("os.execvpe", new=execvpe_mock)
-def test_run_script_from_internet() -> None:
-    run_pipx_cli_exit(
-        [
-            "run",
-            (
-                "https://gist.githubusercontent.com/cs01/"
-                "fa721a17a326e551ede048c5088f9e0f/raw/"
-                "6bdfbb6e9c1132b1c38fdd2f195d4a24c540c324/pipx-demo.py"
-            ),
-        ],
-        assert_exit=0,
-    )
+def test_run_script_from_url(served_script: str) -> None:
+    run_pipx_cli_exit(["run", served_script], assert_exit=0)
+
+
+@pytest.fixture
+def served_script(tmp_path: Path) -> Iterator[str]:
+    """Serves the script over loopback rather than fetching a third-party gist.
+
+    Pointing the test at somebody else's URL made it fail whenever that host rate-limited the runner, and the leaked
+    socket surfaced as an unraisable ResourceWarning in whichever test the GC happened to interrupt.
+    """
+    (tmp_path / "pipx-demo.py").write_text("print('pipx works!')\n", encoding="utf-8")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), partial(SimpleHTTPRequestHandler, directory=str(tmp_path)))
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/pipx-demo.py"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 @pytest.mark.parametrize(

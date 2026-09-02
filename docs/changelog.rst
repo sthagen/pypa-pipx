@@ -14,6 +14,85 @@ to this file.
 
 .. towncrier release notes start
 
+`1.17.2 <https://github.com/pypa/pipx/tree/1.17.2>`_ - 2026-09-01
+=================================================================
+
+Bugfixes
+--------
+
+- Fix `KeyError` stderr noise when installing packages in Python3.15. (:issue:`2026`)
+
+
+`1.17.1 <https://github.com/pypa/pipx/tree/1.17.1>`_ - 2026-08-30
+=================================================================
+
+Bugfixes
+--------
+
+- `pipx environment` now reports `PIPX_MAX_LOGS`, and `pipx environment --value PIPX_MAX_LOGS` no longer exits with
+  `invalid choice`. (:issue:`2024`)
+
+
+Miscellaneous internal changes
+------------------------------
+
+- :issue:`2021`, :issue:`2025`
+
+
+`1.17.0 <https://github.com/pypa/pipx/tree/1.17.0>`_ - 2026-08-29
+=================================================================
+
+Features
+--------
+
+- Add `PIPX_COOLDOWN`, a default for `--cooldown` on `install`, `install-all`, `inject`, `upgrade`, `upgrade-all` and
+  `run`, so one release-age policy covers every command. An explicit `--cooldown` still wins, `--cooldown 0` opts a single
+  command out, and a locked install ignores the variable rather than failing. (:issue:`2014`)
+
+
+Bugfixes
+--------
+
+- Require `packaging>=26`. Earlier releases serialize a direct reference as `name@ url` rather than PEP 508's
+  `name @ url`, so the specifier pipx recorded in `pipx_metadata.json` and passed to the backend depended on which
+  `packaging` happened to be installed. (:issue:`2015`)
+
+
+`1.16.8 <https://github.com/pypa/pipx/tree/1.16.8>`_ - 2026-08-25
+=================================================================
+
+Bugfixes
+--------
+
+- `pipx run --spec <spec> <app>` on the uv backend builds a pipx-managed venv when `<app>` differs from the spec's
+  normalized distribution name, or when the spec carries no name at all, so pipx honors the package's `[pipx.run]` entry
+  point. An `<app>` that matches the name still runs through `uv tool run`, which sees console scripts only. (:issue:`2004`)
+
+
+Improved Documentation
+----------------------
+
+- The CLI reference in the documentation now shows `pipx run` instead of `sphinx-build run`. (:issue:`2005`)
+
+
+`1.16.7 <https://github.com/pypa/pipx/tree/1.16.7>`_ - 2026-08-13
+=================================================================
+
+Bugfixes
+--------
+
+- Fix pipx not being able to discover packages in separated platlib directories. (:issue:`1999`)
+- Retry transient failures when fetching the python-build-standalone release index and downloading interpreter archives,
+  resuming an interrupted archive download from the bytes already received instead of starting over. (:issue:`2001`)
+
+
+Improved Documentation
+----------------------
+
+- Correct the documented Windows default for `PIPX_HOME`, which resolves to `%LOCALAPPDATA%\pipx\pipx` rather than
+  `%LOCALAPPDATA%\pipx`. (:issue:`2002`)
+
+
 `1.16.6 <https://github.com/pypa/pipx/tree/1.16.6>`_ - 2026-08-04
 =================================================================
 

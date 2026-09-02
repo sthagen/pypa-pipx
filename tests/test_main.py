@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Final, cast
+from typing import TYPE_CHECKING, Final, cast
 from unittest import mock
 
 import pytest
@@ -15,6 +15,9 @@ from docutils.core import publish_string
 
 from helpers import run_pipx_cli
 from pipx import constants, main
+
+if TYPE_CHECKING:
+    from pytest_mock import MockerFixture
 
 _ROOT: Final = Path(__file__).parents[1]
 _MANPAGE_RST: Final = _ROOT / "docs" / "man" / "pipx.1.rst"
@@ -62,15 +65,27 @@ def test_version(capsys: pytest.CaptureFixture[str]) -> None:
         ("__main__.py", "/usr/bin/python", "/usr/bin/python -m pipx"),
     ],
 )
-def test_prog_name(monkeypatch: pytest.MonkeyPatch, argv: str, executable: str, expected: str) -> None:
-    monkeypatch.setattr("pipx.main.sys.argv", [argv])
-    monkeypatch.setattr("pipx.main.sys.executable", executable)
+def test_prog_name(mocker: MockerFixture, argv: str, executable: str, expected: str) -> None:
+    mocker.patch.object(sys, "argv", [argv])
+    mocker.patch.object(sys, "executable", executable)
     assert main.prog_name() == expected
 
 
-def test_limit_verbosity() -> None:
-    assert not run_pipx_cli(["list", "-qqq"])
-    assert not run_pipx_cli(["list", "-vvvv"])
+def test_build_parser_uses_pipx_in_subcommand_help(mocker: MockerFixture, capsys: pytest.CaptureFixture[str]) -> None:
+    mocker.patch.object(sys, "argv", ["sphinx-build"])
+    parser = main.build_parser()
+
+    with pytest.raises(SystemExit) as sys_exit:
+        parser.parse_args(["run", "--help"])
+
+    assert sys_exit.value.code == 0
+    assert capsys.readouterr().out.startswith("usage: pipx run ")
+
+
+@pytest.mark.parametrize("flag", [pytest.param("-qqq", id="quiet"), pytest.param("-vvvv", id="verbose")])
+@pytest.mark.usefixtures("pipx_temp_env")
+def test_limit_verbosity(flag: str) -> None:
+    assert not run_pipx_cli(["list", flag])
 
 
 def test_all_subcommands_have_func_registered() -> None:
@@ -255,6 +270,31 @@ def test_validate_fetch_python_passes_when_unset(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(main, "_FETCH_PYTHON_RAW", None)
     monkeypatch.setattr(main, "_FETCH_MISSING_PYTHON_RAW", None)
     main._validate_fetch_python()  # ruff:ignore[private-member-access]  # no public API
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected_days", "expected_invalid"),
+    [
+        pytest.param(None, None, False, id="unset"),
+        pytest.param("  ", None, False, id="blank"),
+        pytest.param("7", 7, False, id="days"),
+        pytest.param(" 7 ", 7, False, id="whitespace-padded"),
+        pytest.param("0", 0, False, id="zero"),
+        pytest.param("-1", None, True, id="negative"),
+        pytest.param("garbage", None, True, id="not-an-integer"),
+    ],
+)
+def test_compute_cooldown(raw: str | None, expected_days: int | None, expected_invalid: bool) -> None:
+    assert constants._compute_cooldown(raw) == (expected_days, expected_invalid)  # ruff:ignore[private-member-access]  # no public API
+
+
+def test_cli_rejects_invalid_env_cooldown(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setattr(main, "_COOLDOWN_INVALID", True)
+    monkeypatch.setattr(main, "_COOLDOWN_RAW", "garbage")
+
+    assert run_pipx_cli(["list"])
+
+    assert "PIPX_COOLDOWN must be unset or a non-negative integer, got 'garbage'." in capsys.readouterr().err
 
 
 def test_deprecated_fetch_missing_python_silent_under_help(capsys: pytest.CaptureFixture[str]) -> None:
