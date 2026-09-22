@@ -14,6 +14,46 @@ to this file.
 
 .. towncrier release notes start
 
+`1.17.5 <https://github.com/pypa/pipx/tree/1.17.5>`_ - 2026-09-20
+=================================================================
+
+Bugfixes
+--------
+
+- Report failed environments when running `pipx reinstall-all`. (:issue:`2042`)
+
+
+`1.17.4 <https://github.com/pypa/pipx/tree/1.17.4>`_ - 2026-09-18
+=================================================================
+
+Bugfixes
+--------
+
+- `pipx upgrade` of a package installed from a local path, wheel, or VCS URL no longer reports "already at latest
+  version". It now says the package is unchanged because it is installed from a local source and that no package index was
+  checked, and suggests reinstalling by package name to track index releases. (:issue:`2040`)
+
+
+`1.17.3 <https://github.com/pypa/pipx/tree/1.17.3>`_ - 2026-09-16
+=================================================================
+
+Bugfixes
+--------
+
+- Report a clear error when PIPX_MAX_LOGS is not a non-negative integer, instead of crashing on every pipx command. Empty
+  or whitespace-only values fall back to the default everywhere, including log setup. (:issue:`2029`)
+- Split `--pip-args` the way a shell would, so a quoted path with spaces such as `--find-links '/tmp/foo bar'` reaches pip
+  intact instead of failing to parse. On Windows pipx now drops the quotes around each argument and keeps backslashes as
+  path separators. (:issue:`2033`)
+- Stop `pipx runpip` from printing uv DEBUG logs on the uv backend. (:issue:`2035`)
+
+
+Improved Documentation
+----------------------
+
+- List every `--pip-args` flag the uv backend translates instead of only four. (:issue:`2037`)
+
+
 `1.17.2 <https://github.com/pypa/pipx/tree/1.17.2>`_ - 2026-09-01
 =================================================================
 
