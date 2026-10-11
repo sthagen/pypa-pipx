@@ -17,7 +17,7 @@ from unittest import mock
 
 import pytest
 
-from helpers import PACKAGE_CACHE_DIR_NAME, app_name, run_pipx_cli, skip_if_windows, unwrap_log_text
+from helpers import PACKAGE_CACHE_DIR_NAME, MakePylock, app_name, run_pipx_cli, skip_if_windows, unwrap_log_text
 from package_info import PKG
 from pipx import main, paths, shared_libs
 from pipx.backends import Backend
@@ -27,7 +27,7 @@ from pipx.util import PipxError
 from pipx.venv import Venv
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Sequence
+    from collections.abc import Callable, Generator, Sequence
     from unittest.mock import MagicMock
 
     from _pytest.capture import CaptureResult
@@ -35,6 +35,12 @@ if TYPE_CHECKING:
 
 TEST_DATA_PATH = "./testdata/test_package_specifier"
 _FREE_THREADED: Final[bool] = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
+# Pywinpty lacks Python 3.15 wheels: https://github.com/andfoy/pywinpty/issues/582
+_JUPYTER_PYTHON_ARGS: Final[tuple[str, ...]] = (
+    ("--python", os.environ.get("PIPX_TEST_JUPYTER_PYTHON", "3.14"))
+    if sys.platform == "win32" and sys.version_info >= (3, 15)
+    else ()
+)
 
 
 def test_help_text(capsys: pytest.CaptureFixture[str]) -> None:
@@ -223,7 +229,7 @@ def _local_git_spec(project: Path) -> str:
 
 
 @contextmanager
-def _served_archive_spec(project: Path) -> Iterator[str]:
+def _served_archive_spec(project: Path) -> Generator[str, None, None]:
     archive = Path(
         shutil.make_archive(str(project.parent / "empty-project-0.1.0"), "zip", project.parent, project.name)
     )
@@ -313,7 +319,7 @@ def test_install_no_apps_guidance(
     if _FREE_THREADED and package_name == "jupyter":
         pytest.skip("Skipping jupyter due to missing free-threaded wheel for pyzmq")
 
-    return_code = run_pipx_cli(["install", *install_args])
+    return_code = run_pipx_cli(["install", *install_args, *(_JUPYTER_PYTHON_ARGS if package_name == "jupyter" else ())])
 
     error = capsys.readouterr().err
     assert (
@@ -332,12 +338,15 @@ def test_install_records_expected_app() -> None:
     assert PipxMetadata(paths.ctx.venvs / "pycowsay").main_package.expected_apps == ["pycowsay"]
 
 
+# the grouped row mirrors a `pipx manifest lock` output: nab gates every package on the tool's group and the lock
+# names that group as its default
+@pytest.mark.parametrize("group", [pytest.param(None, id="flat"), pytest.param("pycowsay", id="grouped")])
 @pytest.mark.parametrize("backend", [pytest.param("pip", id="pip"), pytest.param("uv", id="uv")])
 @pytest.mark.usefixtures("pipx_temp_env")
-def test_install_from_pylock(make_pylock: Callable[[str, str], Path], backend: str) -> None:
+def test_install_from_pylock(make_pylock: MakePylock, backend: str, group: str | None) -> None:
     if backend == "uv" and shutil.which("uv") is None:
         pytest.skip("uv is not installed")
-    lock_file: Final[Path] = make_pylock("pycowsay", "0.0.0.2")
+    lock_file: Final[Path] = make_pylock("pycowsay", "0.0.0.2", group)
 
     assert not run_pipx_cli(["install", "--backend", backend, "--lock", str(lock_file), "pycowsay>=0"])
 
@@ -943,7 +952,7 @@ def test_include_deps() -> None:
     if _FREE_THREADED:
         pytest.skip("Skipping jupyter due to missing free-threaded wheel for pyzmq")
 
-    assert not run_pipx_cli(["install", PKG["jupyter"]["spec"], "--include-deps"])
+    assert not run_pipx_cli(["install", PKG["jupyter"]["spec"], "--include-deps", *_JUPYTER_PYTHON_ARGS])
 
 
 @pytest.mark.usefixtures("pipx_temp_env")
@@ -1303,11 +1312,21 @@ def test_install_local_archive(
 
 
 @pytest.mark.parametrize("backend", [pytest.param("pip", id="pip"), pytest.param("uv", id="uv")])
+@pytest.mark.parametrize(
+    "directory",
+    [
+        pytest.param("scripts", id="plain"),
+        pytest.param("scripts#123", id="hash"),
+        pytest.param("Project #123", id="space-and-hash"),
+    ],
+)
 @pytest.mark.usefixtures("pipx_temp_env")
-def test_install_inline_script(inline_script: Path, backend: str) -> None:
+def test_install_inline_script(inline_script: Path, backend: str, directory: str) -> None:
     if backend == "uv" and shutil.which("uv") is None:
         pytest.skip("uv is not installed")
-    assert not run_pipx_cli(["install", "--backend", backend, str(inline_script)])
+    (script_dir := inline_script.parent / directory).mkdir()
+    script: Final[Path] = inline_script.rename(script_dir / inline_script.name)
+    assert not run_pipx_cli(["install", "--backend", backend, str(script)])
 
     app: Final[Path] = paths.ctx.bin_dir / app_name("hello")
     process: Final[subprocess.CompletedProcess[str]] = subprocess.run(
@@ -1317,6 +1336,40 @@ def test_install_inline_script(inline_script: Path, backend: str) -> None:
         text=True,
     )
     assert (process.stdout, run_pipx_cli(["uninstall", "hello"]), app.exists()) == ("installed\n", 0, False)
+
+
+@pytest.mark.usefixtures("pipx_temp_env")
+def test_install_inline_script_by_bare_relative_name(inline_script: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(inline_script.parent)
+
+    assert (
+        run_pipx_cli(["install", inline_script.name]),
+        PipxMetadata(paths.ctx.venvs / "hello").main_package.package_or_url,
+    ) == (0, str(inline_script.resolve()))
+
+
+@pytest.mark.parametrize(
+    "directory",
+    [pytest.param("[1]", id="whole-name"), pytest.param("a[x]b", id="inside-name")],
+)
+@pytest.mark.usefixtures("pipx_temp_env")
+def test_install_inline_script_from_bracketed_directory(inline_script: Path, directory: str) -> None:
+    (script_dir := inline_script.parent / directory).mkdir()
+    script: Final[Path] = inline_script.rename(script_dir / inline_script.name)
+
+    assert (
+        run_pipx_cli(["install", str(script)]),
+        run_pipx_cli(["reinstall", "hello"]),
+        PipxMetadata(paths.ctx.venvs / "hello").main_package.package_or_url,
+    ) == (0, 0, str(script.resolve()))
+
+
+@pytest.mark.usefixtures("pipx_temp_env")
+def test_install_inline_script_from_unexpanded_home(inline_script: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME", str(inline_script.parent))
+    monkeypatch.setenv("USERPROFILE", str(inline_script.parent))
+
+    assert not run_pipx_cli(["install", f"~/{inline_script.name}"])
 
 
 @pytest.mark.usefixtures("pipx_temp_env")

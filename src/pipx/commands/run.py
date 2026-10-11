@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import json
 import logging
 import urllib.parse
 import urllib.request
@@ -11,7 +12,7 @@ from shutil import which
 from typing import TYPE_CHECKING, Final, NoReturn
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator
 
 from filelock import Timeout
 from packaging.requirements import InvalidRequirement, Requirement
@@ -548,32 +549,23 @@ def _get_temporary_venv_path(  # ruff:ignore[too-many-arguments]  # all inputs f
     *,
     cooldown_days: int | None,
 ) -> Path:
-    """Hash venv-affecting inputs to a deterministic cache path.
-
-    ``backend`` is part of the key so pip- and uv-backed temp venvs for the
-    same package coexist instead of stomping on each other.
-    """
-    digest = hashlib.sha256()
-    digest.update("".join(requirements).encode())
-    digest.update(python.encode())
-    digest.update("".join(pip_args).encode())
-    digest.update("".join(venv_args).encode())
-    digest.update(backend.encode())
-    digest.update(f"{cooldown_days=}".encode())
-    venv_folder_name = digest.hexdigest()[:15]  # 15 chosen arbitrarily
-    return Path(paths.ctx.venv_cache) / venv_folder_name
+    # Preserve list and field boundaries so different invocations cannot reuse the same digest input.
+    digest: Final = hashlib.sha256(
+        json.dumps([requirements, python, pip_args, venv_args, backend, cooldown_days]).encode()
+    )
+    return Path(paths.ctx.venv_cache) / digest.hexdigest()[:15]
 
 
 def _is_temporary_venv_expired(venv_dir: Path) -> bool:
     created_time_sec = venv_dir.stat().st_ctime
-    current_time_sec = datetime.datetime.now(tz=datetime.timezone.utc).timestamp()
+    current_time_sec = datetime.datetime.now(tz=datetime.UTC).timestamp()
     age = current_time_sec - created_time_sec
     expiration_threshold_sec = 60 * 60 * 24 * TEMP_VENV_EXPIRATION_THRESHOLD_DAYS
     return age > expiration_threshold_sec or (venv_dir / _VENV_EXPIRED_FILENAME).exists()
 
 
 @contextmanager
-def _locked_venv_cache(venv_dir: Path) -> Iterator[None]:
+def _locked_venv_cache(venv_dir: Path) -> Generator[None, None, None]:
     venv_container: Final[VenvContainer] = VenvContainer(paths.ctx.venv_cache)
     for cached_venv_dir in sorted(venv_container.iter_venv_dirs()):
         if cached_venv_dir == venv_dir:

@@ -14,6 +14,106 @@ to this file.
 
 .. towncrier release notes start
 
+`1.17.13 <https://github.com/pypa/pipx/tree/1.17.13>`_ - 2026-10-10
+===================================================================
+
+Bugfixes
+--------
+
+- Accept bare and suffixed injected package names in `pipx pin --skip`. (:issue:`2079`)
+- Use each snapshot's recorded interpreter when `pipx install-all` rebuilds an environment unless the user passes
+  `--python`. (:issue:`2081`)
+
+
+`1.17.12 <https://github.com/pypa/pipx/tree/1.17.12>`_ - 2026-10-07
+===================================================================
+
+Bugfixes
+--------
+
+- Stop `pipx reinstall` from printing a traceback when the reinstall fails for an expected reason. (:issue:`2070`)
+- Stop `pipx install` printing `WARNING: Skipping setuptools as it is not installed.` when the shared libraries are
+  created on Python 3.12+, where setuptools is already absent. (:issue:`2071`)
+- Stop an injected package in a suffixed environment from being renamed every time its record is rewritten:
+  `pipx upgrade`, `pipx pin` and `pipx reinstall` no longer append the environment suffix again, so the package keeps its
+  name in `pipx list --include-injected` and stays addressable by `pipx uninject`. (:issue:`2072`)
+
+
+Improved Documentation
+----------------------
+
+- Update the pipx logo author credit. (:issue:`2073`)
+
+
+`1.17.11 <https://github.com/pypa/pipx/tree/1.17.11>`_ - 2026-10-03
+===================================================================
+
+Improved Documentation
+----------------------
+
+- Hide the extra documentation TOC toggle on narrow screens. (:issue:`2064`)
+
+
+`1.17.10 <https://github.com/pypa/pipx/tree/1.17.10>`_ - 2026-10-02
+===================================================================
+
+Bugfixes
+--------
+
+- Remove an environment that has no pipx metadata and an interpreter that no longer runs, instead of crashing
+  `pipx uninstall` and `pipx uninstall-all`. (:issue:`2059`)
+- Derive local script command names from the filename when parent directories contain `#`. A script installed by an
+  earlier release under its directory's name no longer upgrades; uninstall it and install it again. (:issue:`2060`)
+- Install a local PEP 723 script from its file when the path reads as a PyPI name (`pipx install bare.py`), contains `[`,
+  or starts with a quoted `~`, and stop the upgrade hint from suggesting a PyPI reinstall for a script. (:issue:`2062`)
+
+
+`1.17.9 <https://github.com/pypa/pipx/tree/1.17.9>`_ - 2026-10-01
+=================================================================
+
+Bugfixes
+--------
+
+- Stop adding ` -E` to an app script's shebang when the longer line would exceed the kernel's limit, which made the script
+  fail on macOS with `Exec format error`. (:issue:`2058`)
+
+
+`1.17.8 <https://github.com/pypa/pipx/tree/1.17.8>`_ - 2026-09-29
+=================================================================
+
+Bugfixes
+--------
+
+- Remove leftover shell completion scripts when running `pipx uninject`. (:issue:`2055`)
+
+
+`1.17.7 <https://github.com/pypa/pipx/tree/1.17.7>`_ - 2026-09-28
+=================================================================
+
+Bugfixes
+--------
+
+- Prevent `pipx run` from sharing cached environments across different requirement lists or argument boundaries. This
+  changes cache keys; run `pipx cache purge` to remove old entries. (:issue:`2053`)
+
+
+`1.17.6 <https://github.com/pypa/pipx/tree/1.17.6>`_ - 2026-09-22
+=================================================================
+
+Bugfixes
+--------
+
+- Record each tool's dependency group as its lock's default so `pipx manifest sync` installs what `pipx manifest lock`
+  wrote. Run `pipx manifest lock` again to fix existing locks. (:issue:`2049`)
+
+
+Improved Documentation
+----------------------
+
+- Fix the argument order in the combined inject command example. (:issue:`2044`)
+- Use direct URL requirements for the Git install example with extras. (:issue:`2045`)
+
+
 `1.17.5 <https://github.com/pypa/pipx/tree/1.17.5>`_ - 2026-09-20
 =================================================================
 

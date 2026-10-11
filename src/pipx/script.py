@@ -4,7 +4,7 @@ import base64
 import hashlib
 import re
 import stat
-import sys
+import tomllib
 import urllib.parse
 import urllib.request
 from contextlib import contextmanager
@@ -21,12 +21,8 @@ from packaging.utils import canonicalize_name
 from pipx.util import PipxError
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator
 
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib
 
 _APP_NAME: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]*")
 _INLINE_METADATA: Final[re.Pattern[str]] = re.compile(
@@ -95,7 +91,7 @@ def read_script_metadata(content: str | Path) -> ScriptMetadata | None:
 
 
 def script_name_from_spec(package_spec: str, expected_apps: tuple[str, ...]) -> str | None:
-    if not _is_script_spec(package_spec):
+    if not is_script_spec(package_spec):
         return None
     if len(expected_apps) > 1:
         msg = "A script can provide one --app name."
@@ -108,7 +104,9 @@ def script_name_from_spec(package_spec: str, expected_apps: tuple[str, ...]) -> 
 
 
 @contextmanager
-def installable_script(package_name: str, package_or_url: str, expected_apps: tuple[str, ...]) -> Iterator[str]:
+def installable_script(
+    package_name: str, package_or_url: str, expected_apps: tuple[str, ...]
+) -> Generator[str, None, None]:
     if (resolved_name := script_name_from_spec(package_or_url, expected_apps)) is None:
         yield package_or_url
         return
@@ -121,12 +119,18 @@ def installable_script(package_name: str, package_or_url: str, expected_apps: tu
         yield str(_write_wheel(Path(directory), package_name, script))
 
 
-def _is_script_spec(package_spec: str) -> bool:
-    path: Final[Path] = Path(package_spec).expanduser()
-    if path.is_file():
-        return path.suffix.lower() == ".py" or (not path.suffix and _has_inline_script_metadata(path))
+def is_script_spec(package_spec: str) -> bool:
+    if local_script(package_spec) is not None:
+        return True
     parsed: Final[urllib.parse.SplitResult] = urllib.parse.urlsplit(package_spec)
     return parsed.scheme in {"http", "https"} and parsed.path.lower().endswith(".py")
+
+
+def local_script(package_spec: str) -> Path | None:
+    path: Final[Path] = Path(package_spec).expanduser()
+    if path.is_file() and (path.suffix.lower() == ".py" or (not path.suffix and _has_inline_script_metadata(path))):
+        return path.resolve()
+    return None
 
 
 def _has_inline_script_metadata(path: Path) -> bool:
@@ -138,7 +142,10 @@ def _has_inline_script_metadata(path: Path) -> bool:
 
 
 def _script_app(package_spec: str, expected_apps: tuple[str, ...]) -> str:
-    return expected_apps[0] if expected_apps else Path(urllib.parse.urlsplit(package_spec).path).stem
+    if expected_apps:
+        return expected_apps[0]
+    path: Final[Path] = Path(package_spec).expanduser()
+    return path.stem if path.is_file() else Path(urllib.parse.urlsplit(package_spec).path).stem
 
 
 def _read_script(package_or_url: str, expected_apps: tuple[str, ...]) -> _Script:
@@ -249,6 +256,8 @@ def _digest(data: bytes) -> str:
 __all__ = [
     "ScriptMetadata",
     "installable_script",
+    "is_script_spec",
+    "local_script",
     "read_script_metadata",
     "script_name_from_spec",
 ]
